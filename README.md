@@ -13,6 +13,7 @@ Bu uygulama Google'ın Gemini AI modelini kullanarak metin üretme API'si sağla
 
 ## Kurulum
 
+
 ### 1. Gerekli Paketleri Yükleyin
 
 ```bash
