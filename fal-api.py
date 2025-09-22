@@ -43,7 +43,7 @@ if not FAL_KEY:
     raise ValueError("FAL_KEY ortam değişkeni ayarlanmamış! Lütfen .env dosyasını kontrol edin veya ortam değişkenini ayarlayın.")
 
 # Model adını belirle
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "google/gemini-2.5-flash"
 FAL_MODEL_GATEWAY = "fal-ai/any-llm"
 
 @app.get("/")
@@ -125,31 +125,43 @@ async def generate_text_sync(request: TextGenerationRequest):
     Gemini 2.5 Flash ile tek seferde (non-streaming) metin üretme endpoint'i.
     """
     try:
-        # Standart fal.ai çağrısı (asenkron)
-        result = await fal_client.aquery(
-            FAL_MODEL_GATEWAY,
+        print(f"[LOG] /generate endpoint'ine istek geldi - prompt: {request.prompt[:50]}...")
+        
+        # Düzeltilmiş fal.ai çağrısı (asenkron)
+        result = await fal_client.run_async(
+            "fal-ai/any-llm",  # Model gateway/endpoint adı
             arguments={
-                "model_name": MODEL_NAME,
+                "model": MODEL_NAME,
                 "prompt": request.prompt,
                 "max_tokens": request.max_tokens,
                 "temperature": request.temperature,
             },
         )
 
-        generated_text = result.get("text", "Metin üretilemedi.")
+        print(f"[LOG] fal.ai'dan yanıt alındı: {result}")
+        
+        # Yanıt formatı değişmiş olabilir, 'text' yerine 'output' olabilir.
+        # Gelen 'result' objesini loglayarak doğru anahtarı teyit edin.
+        generated_text = result.get("output", "Metin üretilemedi.")
+        
+        print(f"[LOG] Üretilen metin: {generated_text[:100]}...")
 
         return {
             "generated_text": generated_text,
             "model": MODEL_NAME,
-            "gateway": FAL_MODEL_GATEWAY
+            "gateway": "fal-ai/any-llm"
         }
 
     except Exception as e:
+        print(f"[HATA] /generate endpoint'inde hata oluştu: {str(e)}")
+        print(f"[HATA] Hata tipi: {type(e).__name__}")
+        import traceback
+        print(f"[HATA] Traceback: {traceback.format_exc()}")
+        
         raise HTTPException(
             status_code=500,
             detail=f"Metin üretme hatası: {str(e)}"
         )
-
 
 @app.get("/models")
 async def get_model_info():
