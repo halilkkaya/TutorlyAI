@@ -5,7 +5,10 @@ __pycache__/
 
 # C extensions
 *.so
-
+*.sqlite3
+chroma_db/
+chroma_db_v2/
+books/
 # Distribution / packaging
 .Python
 build/
@@ -158,6 +161,7 @@ venv.bak/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+*.pdf
 
 # Pyre type checker
 .pyre/
