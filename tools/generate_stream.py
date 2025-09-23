@@ -29,8 +29,16 @@ async def generate_stream(request: TextGenerationRequest) -> AsyncGenerator[str,
         query = search_plan.get("query", request.prompt)
         filters = search_plan.get("filters", {})
         
-        # Kitapları ara
-        relevant_docs = search_books_enhanced(query, filters, k=4)
+        # Hibrit arama ile kitapları ara
+        relevant_docs = search_books_enhanced(
+            query=query, 
+            filters=filters, 
+            k=4,
+            score_threshold=0.25,  # Streaming için daha düşük threshold
+            use_hybrid=True,       # Hibrit aramayı etkinleştir
+            semantic_weight=0.7,   # Semantic ağırlığı
+            keyword_weight=0.3     # BM25 keyword ağırlığı
+        )
         
         # Arama sonucunu bildir
         search_result_data = {
@@ -146,6 +154,15 @@ Bu soruyla ilgili ders kitaplarında spesifik bilgi bulamadım, ama genel bilgil
                 elif "done" in event or "response" in event:
                     final_response = event.get("response", "")
                     
+                    # Hibrit arama detaylarını hazırla
+                    search_details = {}
+                    if relevant_docs:
+                        search_details = {
+                            "average_hybrid_score": sum(doc.metadata.get('hybrid_score', 0) for doc in relevant_docs) / len(relevant_docs),
+                            "average_semantic_score": sum(doc.metadata.get('semantic_score', 0) for doc in relevant_docs) / len(relevant_docs),
+                            "average_bm25_score": sum(doc.metadata.get('bm25_score', 0) for doc in relevant_docs) / len(relevant_docs)
+                        }
+                    
                     # Generation tamamlandı
                     final_data = {
                         "status": "completed",
@@ -154,6 +171,8 @@ Bu soruyla ilgili ders kitaplarında spesifik bilgi bulamadım, ama genel bilgil
                         "sources": sources,
                         "search_plan": search_plan,
                         "found_documents": len(relevant_docs),
+                        "search_method": "hybrid_search",
+                        "search_details": search_details,
                         "done": True
                     }
                     yield f"data: {json.dumps(final_data)}\n\n"

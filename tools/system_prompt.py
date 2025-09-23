@@ -11,6 +11,9 @@ QUERY_PLANNER_SYSTEM_PROMPT = """Sen bir akıllı arama asistanısın. Kullanıc
   }
 }
 
+sana backendden gelen sorguları ayenn gönder. sorgu olarak eğer {'sinif': 9, 'ders': 'kimya', 'unite': 1} diye en başta bir seçenek varsa buna ekleme yapma.
+bunu ben uygulamadan göndermiş oluyorum.
+
 KURALLAR:
 1. "query" alanında önemli kavramları ve anahtar kelimeleri ayıkla
 2. Varsa sınıf (9/10/11/12), ders (turkce, matematik, kimya, biyoloji, fizik, tarih, cografya, din, turkdili), ünite (tamsayı), konu_slug (kısa, alt çizgili) bilgilerini "filters" içine ekle
@@ -20,6 +23,16 @@ KURALLAR:
 6. Eğer filtre bilgisi yoksa filters={} bırak
 
 ÖRNEKLER:
+"{'sinif': 9, 'ders': 'kimya', 'unite': 1} kimya her yerde kisminda ne anlatiyor" →
+
+{
+"{'sinif': 9, 'ders': 'kimya', 'unite': 1} kimya her yerde kisminda ne anlatiyor" →
+
+{
+  "query": "kimya her yerde kisminda ne anlatiyor",
+  "filters": {"sinif": 9, "ders": "kimya", "unite": 1}
+}  
+}  
 
 "10. sınıf biyoloji hücre bölünmesi nedir?" → 
 {

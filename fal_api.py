@@ -11,7 +11,7 @@ import glob
 from tools.get_search_plan import get_search_plan
 from tools.generate_stream import generate_stream
 from tools.classes import TextGenerationRequest
-from tools.initalize_rag_system import initialize_rag_system, should_load_books, load_books_async,search_books_enhanced
+from tools.initalize_rag_system import initialize_rag_system, should_load_books, load_books_async, search_books_enhanced
 
 # Ortam değişkenlerini yükle
 load_dotenv()
@@ -46,41 +46,6 @@ FAL_MODEL_GATEWAY = "fal-ai/any-llm"
 vectorstore = None
 embedding_model = None
 text_splitter = None
-
-@app.get("/")
-async def root():
-    """Ana endpoint"""
-    global vectorstore
-    
-    # Veri sayısını kontrol et
-    doc_count = 0
-    if vectorstore:
-        try:
-            doc_count = vectorstore._collection.count()
-        except:
-            doc_count = -1
-    
-    return {
-        "message": "Gelişmiş RAG Sistemi Aktif!",
-        "status": "active",
-        "version": "2.0.0",
-        "documents_loaded": doc_count,
-        "features": [
-            "Akıllı arama planlayıcısı",
-            "Metadata tabanlı filtreleme",
-            "9-12. sınıf ders kitapları",
-            "Gelişmiş PDF okuma",
-            "Debug endpoint'leri"
-        ],
-        "endpoints": {
-            "generate": "/generate",
-            "generate_stream": "/generate/stream", 
-            "load_books": "/load-books",
-            "search": "/search",
-            "debug": "/debug",
-            "rag_status": "/rag-status"
-        }
-    }
 
 @app.get("/health")
 async def health_check():
@@ -136,25 +101,45 @@ async def rag_status():
 
 @app.post("/search")
 async def search_endpoint(request: dict):
-    """Manuel arama endpoint'i"""
+    """Manuel arama endpoint'i - Hibrit arama destekli"""
     query = request.get("query", "")
     filters = request.get("filters", {})
     k = request.get("k", 5)
+    score_threshold = request.get("score_threshold", 0.3)
+    use_hybrid = request.get("use_hybrid", True)
+    semantic_weight = request.get("semantic_weight", 0.7)
+    keyword_weight = request.get("keyword_weight", 0.3)
     
     if not query:
         raise HTTPException(status_code=400, detail="Query gerekli")
     
-    results = search_books_enhanced(query, filters, k)
+    results = search_books_enhanced(
+        query=query, 
+        filters=filters, 
+        k=k,
+        score_threshold=score_threshold,
+        use_hybrid=use_hybrid,
+        semantic_weight=semantic_weight,
+        keyword_weight=keyword_weight
+    )
     
     return {
         "query": query,
         "filters": filters,
+        "search_config": {
+            "use_hybrid": use_hybrid,
+            "semantic_weight": semantic_weight,
+            "keyword_weight": keyword_weight,
+            "score_threshold": score_threshold
+        },
         "results_count": len(results),
         "results": [
             {
                 "content": doc.page_content[:200] + "...",
                 "metadata": doc.metadata,
-                "relevance_score": getattr(doc, 'relevance_score', None)
+                "hybrid_score": doc.metadata.get('hybrid_score', 0),
+                "semantic_score": doc.metadata.get('semantic_score', 0),
+                "bm25_score": doc.metadata.get('bm25_score', 0)
             }
             for doc in results
         ]
@@ -225,14 +210,15 @@ async def generate_rag_answer(request: TextGenerationRequest):
         
         print(f"[GENERATE] Arama planı - Query: '{query}', Filters: {filters}")
         
-        # 2. İki arama stratejisi - seçiminize göre birini kullanın
-        
-        # Strateji A: Sabit threshold ile
+        # 2. Hibrit arama stratejisi ile doküman bulma (request parametrelerini kullan)
         relevant_docs = search_books_enhanced(
             query=query, 
             filters=filters, 
-            k=5, 
-            score_threshold=0.3  # Bu değeri ihtiyacınıza göre ayarlayın
+            k=request.search_k, 
+            score_threshold=request.score_threshold,
+            use_hybrid=request.use_hybrid,
+            semantic_weight=request.semantic_weight,
+            keyword_weight=request.keyword_weight
         )
         
         
@@ -263,7 +249,7 @@ async def generate_rag_answer(request: TextGenerationRequest):
             2. Kapsamlı ve anlaşılır bir açıklama yap  
             3. Hangi kaynaktan bilgi aldığını belirt
             4. Eğer cevap kaynaklarda yoksa, bunu söyle
-            5. Bu kaynaklar yüksek benzerlik skoru ile seçildi
+            5. Bu kaynaklar hibrit arama sistemi (semantic + keyword) ile seçildi
 
             CEVAP:"""
         else:
@@ -297,12 +283,38 @@ async def generate_rag_answer(request: TextGenerationRequest):
         
         final_answer = result.get("output", "Cevap oluşturulamadı.")
         
+        # Hibrit arama detaylarını topla
+        search_details = {}
+        if relevant_docs:
+            search_details = {
+                "average_hybrid_score": sum(doc.metadata.get('hybrid_score', 0) for doc in relevant_docs) / len(relevant_docs),
+                "average_semantic_score": sum(doc.metadata.get('semantic_score', 0) for doc in relevant_docs) / len(relevant_docs),
+                "average_bm25_score": sum(doc.metadata.get('bm25_score', 0) for doc in relevant_docs) / len(relevant_docs),
+                "score_breakdown": [
+                    {
+                        "source": doc.metadata.get('source', 'Bilinmeyen'),
+                        "hybrid_score": doc.metadata.get('hybrid_score', 0),
+                        "semantic_score": doc.metadata.get('semantic_score', 0),
+                        "bm25_score": doc.metadata.get('bm25_score', 0)
+                    }
+                    for doc in relevant_docs
+                ]
+            }
+
         return {
             "generated_text": final_answer,
             "search_plan": search_plan,
             "found_documents": len(relevant_docs),
             "sources": [doc.metadata.get('source', 'Bilinmeyen') for doc in relevant_docs] if relevant_docs else [],
-            "threshold_used": "0.5 (with fallback to 0.3)" if relevant_docs else "no_docs_found"
+            "search_method": "hybrid_search" if request.use_hybrid else "semantic_only",
+            "search_config": {
+                "semantic_weight": request.semantic_weight,
+                "keyword_weight": request.keyword_weight,
+                "score_threshold": request.score_threshold,
+                "search_k": request.search_k,
+                "hybrid_enabled": request.use_hybrid
+            },
+            "search_details": search_details
         }
         
     except Exception as e:

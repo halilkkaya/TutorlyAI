@@ -4,6 +4,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 import glob
 from pathlib import Path
 from tools.parse_filename import parse_filename_for_metadata
+from tools.hybrid_retriever import HybridRetriever
 import re
 import traceback
 from langchain.schema import Document
@@ -13,12 +14,13 @@ from typing import Dict, Any, List, Optional
 vectorstore = None
 embedding_model = None
 text_splitter = None
+hybrid_retriever = None
 
 
 # RAG sistem fonksiyonları
 def initialize_rag_system():
     """RAG sistemini başlatır"""
-    global vectorstore, embedding_model, text_splitter
+    global vectorstore, embedding_model, text_splitter, hybrid_retriever
     
     try:
         print("[RAG] Sistem başlatılıyor...")
@@ -48,6 +50,10 @@ def initialize_rag_system():
             persist_directory="./chroma_db_v2"  # Yeni versiyon için farklı klasör
         )
         print("[RAG] ChromaDB bağlandı")
+        
+        # Hibrit retriever'ı başlat
+        hybrid_retriever = HybridRetriever(vectorstore, embedding_model)
+        print("[RAG] Hibrit retriever başlatıldı")
         
         return True
         
@@ -183,17 +189,23 @@ async def load_books_async():
 
  
 def search_books_enhanced(query: str, filters: Optional[Dict[str, Any]] = None, 
-                          k: int = 5, score_threshold: float = 0.5) -> List[Document]:
+                          k: int = 5, score_threshold: float = 0.5,
+                          use_hybrid: bool = True,
+                          semantic_weight: float = 0.7,
+                          keyword_weight: float = 0.3) -> List[Document]:
     """
-    Gelişmiş kitap arama fonksiyonu - Benzerlik skoruna göre filtreleme ile
+    Gelişmiş kitap arama fonksiyonu - Hibrit arama (Semantic + BM25) ile
     
     Args:
         query: Arama sorgusu
-        filters: Metadata filtreleri
+        filters: Metadata filtreleri (sadece arama alanını belirler)
         k: Maksimum sonuç sayısı
         score_threshold: Minimum benzerlik skoru (0.0-1.0 arası)
+        use_hybrid: Hibrit arama kullanılsın mı (varsayılan: True)
+        semantic_weight: Semantic search ağırlığı (varsayılan: 0.7)
+        keyword_weight: BM25 keyword search ağırlığı (varsayılan: 0.3)
     """
-    global vectorstore
+    global vectorstore, hybrid_retriever
     
     if not vectorstore:
         print("[SEARCH] RAG sistemi aktif değil")
@@ -205,11 +217,10 @@ def search_books_enhanced(query: str, filters: Optional[Dict[str, Any]] = None,
         print(f"[SEARCH] Score threshold: {score_threshold}")
         
         # Arama parametreleri
-        search_kwargs = {"k": k}
+        search_kwargs = {"k": k * 2}  # Daha fazla sonuç al, sonra filtrele
         
-        # ChromaDB filtreleme formatı
+        # ChromaDB filtreleme formatı (sadece arama alanını belirler)
         if filters:
-            # Birden fazla filtre için $and operatörü
             if len(filters) > 1:
                 where_clause = {
                     "$and": [
@@ -217,43 +228,133 @@ def search_books_enhanced(query: str, filters: Optional[Dict[str, Any]] = None,
                     ]
                 }
             else:
-                # Tek filtre
                 key, value = list(filters.items())[0]
                 where_clause = {key: {"$eq": value}}
             
             search_kwargs["filter"] = where_clause
             print(f"[SEARCH] ChromaDB filtre: {where_clause}")
         
-        # Skorlu arama yap
-        docs_with_scores = vectorstore.similarity_search_with_score(query, **search_kwargs)
-        
-        # Score threshold'a göre filtrele
-        filtered_docs = []
-        for doc, score in docs_with_scores:
-            # ChromaDB distance kullanır (düşük = benzer), score'a çevirelim
-            similarity_score = 1.0 - score if score <= 1.0 else 0.0
+        # Hibrit arama kullan
+        if use_hybrid and hybrid_retriever:
+            print("[SEARCH] Hibrit arama modeli kullanılıyor...")
             
-            if similarity_score >= score_threshold:
-                filtered_docs.append(doc)
-                print(f"[SEARCH] ✓ Kabul: {doc.metadata.get('source', 'N/A')} - "
-                      f"Score: {similarity_score:.3f} - "
-                      f"Sınıf: {doc.metadata.get('sinif', 'N/A')} - "
-                      f"Ders: {doc.metadata.get('ders', 'N/A')}")
-            else:
-                print(f"[SEARCH] ✗ Ret: {doc.metadata.get('source', 'N/A')} - "
-                      f"Score: {similarity_score:.3f} (threshold: {score_threshold})")
+            # Hibrit arama için BM25 index hazırla
+            if not hybrid_retriever.is_indexed:
+                print("[SEARCH] BM25 index oluşturuluyor...")
+                hybrid_retriever.build_bm25_index()
+            
+            # 1. Semantic search (filtrelenmiş alanda)
+            semantic_docs_with_scores = vectorstore.similarity_search_with_score(query, **search_kwargs)
+            print(f"[SEARCH] Semantic sonuç: {len(semantic_docs_with_scores)}")
+            
+            # 2. BM25 search (tüm dokümanlar üzerinde, sonra filtrele)
+            bm25_results = hybrid_retriever._calculate_bm25_scores(query, k * 2)
+            
+            # BM25 sonuçlarını metadata ile filtrele
+            if filters:
+                filtered_bm25_results = []
+                for doc, score in bm25_results:
+                    match = True
+                    for filter_key, filter_value in filters.items():
+                        if doc.metadata.get(filter_key) != filter_value:
+                            match = False
+                            break
+                    if match:
+                        filtered_bm25_results.append((doc, score))
+                bm25_results = filtered_bm25_results
+            
+            print(f"[SEARCH] BM25 sonuç: {len(bm25_results)}")
+            
+            # 3. Skorları birleştir ve hibrit skor hesapla
+            final_results = []
+            processed_docs = {}
+            
+            # Semantic sonuçları işle
+            for doc, distance in semantic_docs_with_scores:
+                doc_id = f"{doc.metadata.get('source', 'unknown')}_{doc.metadata.get('chunk_id', 0)}"
+                semantic_score = 1.0 - distance if distance <= 1.0 else 0.0
+                processed_docs[doc_id] = {
+                    'doc': doc,
+                    'semantic_score': semantic_score,
+                    'bm25_score': 0.0
+                }
+            
+            # BM25 sonuçlarını işle ve normalize et
+            if bm25_results:
+                bm25_scores = [score for _, score in bm25_results]
+                max_bm25 = max(bm25_scores) if bm25_scores else 1.0
+                min_bm25 = min(bm25_scores) if bm25_scores else 0.0
+                
+                for doc, score in bm25_results:
+                    doc_id = f"{doc.metadata.get('source', 'unknown')}_{doc.metadata.get('chunk_id', 0)}"
+                    normalized_bm25 = (score - min_bm25) / (max_bm25 - min_bm25) if max_bm25 > min_bm25 else 0.0
+                    
+                    if doc_id in processed_docs:
+                        processed_docs[doc_id]['bm25_score'] = normalized_bm25
+                    else:
+                        processed_docs[doc_id] = {
+                            'doc': doc,
+                            'semantic_score': 0.0,
+                            'bm25_score': normalized_bm25
+                        }
+            
+            # Hibrit skor hesapla ve threshold'a göre filtrele
+            for doc_id, scores in processed_docs.items():
+                hybrid_score = (semantic_weight * scores['semantic_score'] + 
+                              keyword_weight * scores['bm25_score'])
+                
+                if hybrid_score >= score_threshold:
+                    doc = scores['doc']
+                    doc.metadata['hybrid_score'] = hybrid_score
+                    doc.metadata['semantic_score'] = scores['semantic_score']
+                    doc.metadata['bm25_score'] = scores['bm25_score']
+                    final_results.append((doc, hybrid_score))
+                    
+                    print(f"[SEARCH] ✓ Kabul: {doc.metadata.get('source', 'N/A')} - "
+                          f"Hibrit: {hybrid_score:.3f} (S:{scores['semantic_score']:.3f}, BM25:{scores['bm25_score']:.3f})")
+                else:
+                    print(f"[SEARCH] ✗ Ret: {scores['doc'].metadata.get('source', 'N/A')} - "
+                          f"Hibrit: {hybrid_score:.3f} (threshold: {score_threshold})")
+            
+            # Hibrit skora göre sırala
+            final_results.sort(key=lambda x: x[1], reverse=True)
+            final_docs = [doc for doc, _ in final_results[:k]]
+            
+        else:
+            # Geleneksel semantic search
+            print("[SEARCH] Geleneksel semantic search kullanılıyor...")
+            docs_with_scores = vectorstore.similarity_search_with_score(query, **search_kwargs)
+            
+            final_docs = []
+            for doc, score in docs_with_scores:
+                similarity_score = 1.0 - score if score <= 1.0 else 0.0
+                
+                if similarity_score >= score_threshold:
+                    doc.metadata['hybrid_score'] = similarity_score
+                    doc.metadata['semantic_score'] = similarity_score
+                    doc.metadata['bm25_score'] = 0.0
+                    final_docs.append(doc)
+                    
+                    print(f"[SEARCH] ✓ Kabul: {doc.metadata.get('source', 'N/A')} - "
+                          f"Score: {similarity_score:.3f}")
+                else:
+                    print(f"[SEARCH] ✗ Ret: {doc.metadata.get('source', 'N/A')} - "
+                          f"Score: {similarity_score:.3f} (threshold: {score_threshold})")
+            
+            final_docs = final_docs[:k]
         
-        print(f"[SEARCH] {len(docs_with_scores)} sonuçtan {len(filtered_docs)} tanesi threshold'u geçti")
+        print(f"[SEARCH] Final: {len(final_docs)} sonuç döndürülüyor")
         
-        # Sonuçları içerik preview ile logla
-        for i, doc in enumerate(filtered_docs):
-            print(f"[SEARCH] Final Sonuç {i+1}: {doc.metadata.get('source', 'N/A')} - "
-                  f"İçerik: {doc.page_content[:100]}...")
+        # Eğer hiç sonuç yoksa Generate API'nin fallback mekanizması devreye girecek
+        if not final_docs:
+            print(f"[SEARCH] Hiç doküman threshold ({score_threshold}) değerini geçemedi, boş liste döndürülüyor")
         
-        return filtered_docs
+        return final_docs
         
     except Exception as e:
         print(f"[SEARCH ERROR] Arama hatası: {str(e)}")
         traceback.print_exc()
         return []
+
+
 
