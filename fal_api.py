@@ -25,6 +25,31 @@ from pathlib import Path
 # Ortam değişkenlerini yükle
 load_dotenv()
 
+SUBJECT_ALIASES = {
+    "din": "din",
+    "din_kültürü": "din",
+    "din_kulturu": "din",
+    "inkilap": "inkilap",
+    "inkılap": "inkilap",
+    "cografya": "cografya",
+    "coğrafya": "cografya",
+    "turk_dili_ve_edebiyati": "turkdili",
+    "turk_dili_ve_edebiyatı": "turkdili",
+    "turkce": "turkce",
+    "türkçe": "turkce",
+    "biyoloji": "biyoloji",
+    "fizik": "fizik",
+    "kimya": "kimya",
+    "matematik": "matematik",
+    "tarih": "tarih"
+}
+
+def canonical_subject(raw: str) -> str:
+    s = raw.lower().strip()
+    s = re.sub(r'[_\s\-]+', '_', s)
+    return SUBJECT_ALIASES.get(s, s)
+
+
 # FastAPI uygulaması oluştur
 app = FastAPI(
     title="Fal.ai Any-LLM (Gemini 2.5 Flash) API with Enhanced RAG",
@@ -68,50 +93,41 @@ FAL_MODEL_GATEWAY = "fal-ai/any-llm"
 vectorstore = None
 embedding_model = None
 text_splitter = None
+_PAT_FULL = re.compile(
+    r"^(?P<grade>\d{1,2})_sinif_(?P<subject>[a-z0-9_]+)_unite_(?P<unit>\d{1,2})_(?P<slug>[a-z0-9_]+)\.pdf$",
+    re.IGNORECASE
+)
 
-# Gelişmiş metadata ayrıştırıcı
-def parse_filename_for_metadata(filename: str) -> Optional[Dict[str, Any]]:
+def parse_filename_for_metadata(filename: str):
     """
-    Dosya adından metadata çıkarır. Desteklenen formatlar:
-    - 9_sinif_biyoloji.pdf
-    - 10_sinif_fizik.pdf 
-    - 11_sinif_matematik.pdf
+    Beklenen format:
+    <grade>_sinif_<subject>_unite_<unit>_<slug>.pdf
+    Örn: 9_sinif_biyoloji_unite_01_yasam.pdf
+         9_sinif_din_unite_2_islamda_inanc_esaslari.pdf
     """
-    print(f"[METADATA] Dosya adı ayrıştırılıyor: {filename}")
-    
-    # PDF uzantısını kaldır
-    name_without_ext = filename.replace('.pdf', '').replace('.PDF', '')
-    
-    # Regex pattern: (sayı)_sinif_(ders_adı)
-    patterns = [
-        r"(\d+)_sinif_(.+)",           # 9_sinif_biyoloji
-        r"(\d+)\.sinif\.(.+)",         # 9.sinif.biyoloji
-        r"(\d+)_class_(.+)",           # 9_class_biology
-        r"sinif_(\d+)_(.+)",           # sinif_9_biyoloji
-    ]
-    
-    for pattern in patterns:
-        match = re.match(pattern, name_without_ext, re.IGNORECASE)
-        if match:
-            try:
-                class_num = int(match.group(1))
-                subject = match.group(2).lower().strip()
-                
-                # Konu adını temizle
-                subject = re.sub(r'[_\-\.\s]+', '_', subject).strip('_')
-                
-                metadata = {
-                    "sinif": class_num,
-                    "ders": subject
-                }
-                print(f"[METADATA] Başarıyla ayrıştırıldı: {metadata}")
-                return metadata
-            except (ValueError, IndexError) as e:
-                print(f"[METADATA] Ayrıştırma hatası: {e}")
-                continue
-    
-    print(f"[METADATA] Dosya adı format uyumsuz: {filename}")
-    return None
+    name = filename
+    if name.lower().endswith(".pdf"):
+        name = name[:-4]
+
+    m = _PAT_FULL.match(filename)
+    if not m:
+        # Uymayan dosyaları sessizce geçmek yerine logla:
+        print(f"[METADATA] UYUMSUZ AD: {filename}")
+        return None
+
+    grade = int(m.group("grade"))
+    subject = canonical_subject(m.group("subject"))
+    unit = int(m.group("unit"))
+    slug = m.group("slug").lower().strip("_")
+
+    meta = {
+        "sinif": grade,
+        "ders": subject,
+        "unite": unit,
+        "konu_slug": slug
+    }
+    print(f"[METADATA] Ayrıştırıldı: {filename} -> {meta}")
+    return meta
 
 # Arama planlayıcısı için gelişmiş system prompt
 QUERY_PLANNER_SYSTEM_PROMPT = """Sen bir akıllı arama asistanısın. Kullanıcının sorusunu analiz ederek vektör arama için optimal parametreleri oluşturacaksın.
@@ -121,16 +137,19 @@ QUERY_PLANNER_SYSTEM_PROMPT = """Sen bir akıllı arama asistanısın. Kullanıc
   "query": "anahtar kelimeler ve kavramlar",
   "filters": {
     "sinif": 9,
-    "ders": "biyoloji"
+    "ders": "biyoloji",
+    "unite": 1,
+    "konu_slug": "yasam"
   }
 }
 
 KURALLAR:
-1. "query" kısmında önemli kavramları ve anahtar kelimeleri ayıkla
-2. Sınıf ve ders bilgisi varsa "filters"e ekle
-3. Ders adlarını küçük harfle yaz: "biyoloji", "fizik", "matematik", "kimya", "tarih", "coğrafya"
-4. Sınıf numarası 9, 10, 11 veya 12 olmalıdır
-5. Eğer filtre bilgisi yoksa boş bırak
+1. "query" alanında önemli kavramları ve anahtar kelimeleri ayıkla
+2. Varsa sınıf (9/10/11/12), ders (turkce, matematik, kimya, biyoloji, fizik, tarih, cografya, din, turkdili), ünite (tamsayı), konu_slug (kısa, alt çizgili) bilgilerini "filters" içine ekle
+3. Ders adlarını küçük harfle ve kanonik yaz: "din", "cografya", "turkce", "inkilap" gibi
+4. Sınıf mutlaka 9, 10, 11 veya 12 olmalıdır; belirsizse bu alanı yazma
+5. Kullanıcı ünite/konu belirtmişse "unite" (int) ve "konu_slug" (kısa slug) eklemeye çalış
+6. Eğer filtre bilgisi yoksa filters={} bırak
 
 ÖRNEKLER:
 
@@ -140,16 +159,16 @@ KURALLAR:
   "filters": {"sinif": 10, "ders": "biyoloji"}
 }
 
-"Fizik dersi ivme konusu" → 
+"9. sınıf kimya ünite 1: etkileşim örnekleri" →
 {
-  "query": "ivme hareket hız",
-  "filters": {"ders": "fizik"}
+  "query": "kimyasal etkileşim örnekleri bağ türleri",
+  "filters": {"sinif": 9, "ders": "kimya", "unite": 1, "konu_slug": "etkilesim"}
 }
 
-"Fotosentez nasıl olur?" → 
+"din kültürü islamda inanç esasları açıklama" →
 {
-  "query": "fotosentez klorofil güneş ışığı",
-  "filters": {}
+  "query": "islamda inanç esasları iman şartları",
+  "filters": {"ders": "din", "konu_slug": "islamda_inanc_esaslari"}
 }
 """
 
@@ -355,39 +374,195 @@ async def debug_endpoint():
     except Exception as e:
         return {"error": str(e)}
 
-# Streaming için asenkron jeneratör fonksiyonu
+
 async def generate_stream(request: TextGenerationRequest) -> AsyncGenerator[str, None]:
-    """Streaming metin üretimi"""
+    """RAG entegreli streaming metin üretimi"""
     try:
-        handler = await fal_client.asubscribe(
+        # 🔍 1. ADIM: RAG Araması (hızlı)
+        print(f"[STREAM] RAG araması başlatılıyor: '{request.prompt}'")
+        
+        # Arama durumunu kullanıcıya bildir
+        status_data = {
+            "status": "searching",
+            "message": "Ders kitaplarında arama yapılıyor...",
+            "done": False
+        }
+        yield f"data: {json.dumps(status_data)}\n\n"
+        
+        # Arama planı oluştur
+        search_plan = await get_search_plan(request.prompt)
+        query = search_plan.get("query", request.prompt)
+        filters = search_plan.get("filters", {})
+        
+        # Kitapları ara
+        relevant_docs = search_books_enhanced(query, filters, k=4)
+        
+        # Arama sonucunu bildir
+        search_result_data = {
+            "status": "search_complete",
+            "message": f"{len(relevant_docs)} kaynak bulundu, cevap oluşturuluyor...",
+            "found_sources": len(relevant_docs),
+            "search_plan": search_plan,
+            "done": False
+        }
+        yield f"data: {json.dumps(search_result_data)}\n\n"
+        
+        # 📚 2. ADIM: Context Hazırlama
+        if relevant_docs:
+            context_text = "\n\n---\n\n".join([
+                f"[{doc.metadata.get('source', 'Kaynak')}]\n{doc.page_content}"
+                for doc in relevant_docs
+            ])
+            
+            # Enhanced prompt with context
+            enhanced_prompt = f"""Sen bir ders kitabı uzmanısın. Aşağıdaki soruyu, verilen ders kitabı metinlerini kullanarak cevapla.
+
+SORU: {request.prompt}
+
+DERS KİTABI İÇERİĞİ:
+{context_text}
+
+KURALLAR:
+1. Sadece verilen kaynaklardaki bilgileri kullan
+2. Kapsamlı ve anlaşılır bir açıklama yap  
+3. Hangi kaynaktan bilgi aldığını belirt
+4. Cevabı direkt ver, giriş yapma
+
+CEVAP:"""
+
+            sources = [doc.metadata.get('source', 'Bilinmeyen') for doc in relevant_docs]
+            
+        else:
+            # Eğer kaynak bulunamazsa genel bilgi ile devam et
+            enhanced_prompt = f"""Soru: {request.prompt}
+
+Bu soruyla ilgili ders kitaplarında spesifik bilgi bulamadım, ama genel bilgilerimi kullanarak yardımcı olmaya çalışacağım:"""
+            sources = []
+        
+        # 🚀 3. ADIM: Streaming başlat
+        print(f"[STREAM] LLM streaming başlatılıyor...")
+        
+        # Fal.ai stream_async kullan
+        stream = fal_client.stream_async(
             FAL_MODEL_GATEWAY,
             arguments={
                 "model": MODEL_NAME,
-                "prompt": request.prompt,
+                "prompt": enhanced_prompt,
                 "max_tokens": request.max_tokens,
                 "temperature": request.temperature,
             },
         )
 
-        async for event in handler:
-            if "chunk" in event and event["chunk"]:
+        # İlk token geldiğinde generation başladığını bildir
+        first_token = True
+        
+        # Stream'i dinle
+        async for event in stream:
+            # Event yapısını logla (debug için)
+            print(f"[STREAM DEBUG] Event: {event}")
+            
+            # Farklı event tiplerini kontrol et
+            if isinstance(event, dict):
+                # Text chunk event'i
+                if "chunk" in event and event["chunk"]:
+                    chunk_text = event["chunk"]
+                    
+                    if first_token:
+                        # İlk token geldiğinde generation_started event'i gönder
+                        generation_start_data = {
+                            "status": "generation_started",
+                            "message": "Cevap oluşturuluyor...",
+                            "sources": sources,
+                            "done": False
+                        }
+                        yield f"data: {json.dumps(generation_start_data)}\n\n"
+                        first_token = False
+                    
+                    # Normal text chunk
+                    chunk_data = {
+                        "text": chunk_text,
+                        "type": "content",
+                        "done": False
+                    }
+                    yield f"data: {json.dumps(chunk_data)}\n\n"
+                
+                # Alternative formats
+                elif "output" in event and event["output"]:
+                    chunk_text = event["output"]
+                    
+                    if first_token:
+                        generation_start_data = {
+                            "status": "generation_started", 
+                            "message": "Cevap oluşturuluyor...",
+                            "sources": sources,
+                            "done": False
+                        }
+                        yield f"data: {json.dumps(generation_start_data)}\n\n"
+                        first_token = False
+                    
+                    chunk_data = {
+                        "text": chunk_text,
+                        "type": "content",
+                        "done": False
+                    }
+                    yield f"data: {json.dumps(chunk_data)}\n\n"
+                
+                # Stream completed
+                elif "done" in event or "response" in event:
+                    final_response = event.get("response", "")
+                    
+                    # Generation tamamlandı
+                    final_data = {
+                        "status": "completed",
+                        "message": "Cevap tamamlandı",
+                        "full_response": final_response,
+                        "sources": sources,
+                        "search_plan": search_plan,
+                        "found_documents": len(relevant_docs),
+                        "done": True
+                    }
+                    yield f"data: {json.dumps(final_data)}\n\n"
+                    break
+                
+                # Error handling
+                elif "error" in event:
+                    error_data = {
+                        "status": "error",
+                        "error": str(event["error"]),
+                        "message": "Stream sırasında hata oluştu",
+                        "done": True
+                    }
+                    yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
+                    break
+            
+            # String event (simple text)
+            elif isinstance(event, str) and event.strip():
+                if first_token:
+                    generation_start_data = {
+                        "status": "generation_started",
+                        "message": "Cevap oluşturuluyor...",
+                        "sources": sources,
+                        "done": False
+                    }
+                    yield f"data: {json.dumps(generation_start_data)}\n\n"
+                    first_token = False
+                
                 chunk_data = {
-                    "text": event["chunk"],
+                    "text": event,
+                    "type": "content", 
                     "done": False
                 }
                 yield f"data: {json.dumps(chunk_data)}\n\n"
 
-            elif "response" in event:
-                final_data = {
-                    "text": "",
-                    "done": True,
-                    "full_response": event["response"]
-                }
-                yield f"data: {json.dumps(final_data)}\n\n"
-                break
-
     except Exception as e:
-        error_data = {"error": str(e)}
+        print(f"[STREAM ERROR] {str(e)}")
+        traceback.print_exc()
+        error_data = {
+            "status": "error",
+            "error": str(e),
+            "message": "Bir hata oluştu",
+            "done": True
+        }
         yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
 
 @app.post("/generate/stream")
