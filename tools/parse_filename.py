@@ -5,6 +5,26 @@ vectorstore = None
 embedding_model = None
 text_splitter = None
 
+def normalize_turkish_chars(text: str) -> str:
+    """Türkçe karakterleri normal harflere çevirir"""
+    if not text:
+        return text
+    
+    turkish_chars = {
+        'ç': 'c', 'Ç': 'C',
+        'ğ': 'g', 'Ğ': 'G', 
+        'ı': 'i', 'I': 'I',
+        'ö': 'o', 'Ö': 'O',
+        'ş': 's', 'Ş': 'S',
+        'ü': 'u', 'Ü': 'U'
+    }
+    
+    normalized = text
+    for turkish_char, normal_char in turkish_chars.items():
+        normalized = normalized.replace(turkish_char, normal_char)
+    
+    return normalized
+
 _PAT_FULL = re.compile(
     r"^(?P<grade>\d{1,2})_sinif_(?P<subject>[a-z0-9_]+)_unite_(?P<unit>\d{1,2})_(?P<slug>[a-z0-9_]+)\.pdf$",
     re.IGNORECASE
@@ -49,19 +69,22 @@ def parse_filename_for_metadata(filename: str):
     m = _PAT_FULL.match(filename)
     if not m:
         # Uymayan dosyaları sessizce geçmek yerine logla:
-        print(f"[METADATA] UYUMSUZ AD: {filename}")
+        print(f"[PARSE_FILENAME] Uyumsuz dosya adı: {filename}")
         return None
 
     grade = int(m.group("grade"))
     subject = canonical_subject(m.group("subject"))
     unit = int(m.group("unit"))
     slug = m.group("slug").lower().strip("_")
+    
+    # konu_slug'ı Türkçe karakterlerden arındır
+    normalized_slug = normalize_turkish_chars(slug)
 
     meta = {
         "sinif": grade,
         "ders": subject,
         "unite": unit,
-        "konu_slug": slug
+        "konu_slug": normalized_slug
     }
-    print(f"[METADATA] Ayrıştırıldı: {filename} -> {meta}")
+    print(f"[PARSE_FILENAME] Metadata ayrıştırıldı: {filename}, {meta}")
     return meta

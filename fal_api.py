@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 import os
 import asyncio
 from dotenv import load_dotenv
@@ -10,7 +11,8 @@ import glob
 
 from tools.get_search_plan import get_search_plan
 from tools.generate_stream import generate_stream
-from tools.classes import TextGenerationRequest
+from tools.generate_quiz import generate_quiz
+from tools.classes import TextGenerationRequest, QuizRequest
 from tools.initalize_rag_system import initialize_rag_system, should_load_books, load_books_async, search_books_enhanced
 
 # Ortam değişkenlerini yükle
@@ -18,9 +20,9 @@ load_dotenv()
 
 # FastAPI uygulaması oluştur
 app = FastAPI(
-    title="Fal.ai Any-LLM (Gemini 2.5 Flash) API with Enhanced RAG",
-    description="Gelişmiş RAG sistemi ile fal.ai 'any-llm' modeli kullanarak streaming metin üretme API'si",
-    version="2.0.0"
+    title="TutorlyAI - Enhanced RAG & Quiz API",
+    description="Gelişmiş RAG sistemi ve Quiz oluşturma API'si - fal.ai Gemini 2.5 Flash ile güçlendirilmiş",
+    version="2.1.0"
 )
 
 # CORS ayarları
@@ -321,6 +323,66 @@ async def generate_rag_answer(request: TextGenerationRequest):
         print(f"[GENERATE ERROR] {str(e)}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/quiz/generate")
+async def generate_quiz_endpoint(request: QuizRequest):
+    """Quiz soruları oluştur"""
+    try:
+        print(f"[QUIZ API] Quiz generation request: {request.soru_sayisi} {request.soru_tipi} soru")
+        
+        quiz_response = await generate_quiz(request)
+        
+        return {
+            "success": True,
+            "message": "Quiz başarıyla oluşturuldu",
+            "data": quiz_response.model_dump()
+        }
+        
+    except ValidationError as e:
+        print(f"[QUIZ API] Pydantic validation error: {str(e)}")
+        # Pydantic error'ını güzel formata çevir
+        error_details = []
+        for error in e.errors():
+            field = " -> ".join(str(x) for x in error["loc"])
+            message = error["msg"]
+            error_details.append(f"{field}: {message}")
+        
+        raise HTTPException(
+            status_code=400, 
+            detail={
+                "error": "Validation failed",
+                "details": error_details,
+                "message": "Gönderilen veriler geçersiz"
+            }
+        )
+    except ValueError as e:
+        print(f"[QUIZ API] Generation error: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"[QUIZ API ERROR] {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Quiz oluşturma hatası: {str(e)}")
+
+
+@app.get("/quiz/info")
+async def quiz_info():
+    """Quiz sistemi hakkında bilgi"""
+    return {
+        "supported_question_types": ["coktan_secmeli", "acik_uclu"],
+        "supported_grades": list(range(1, 13)),  # 1-12
+        "max_questions": 10,  # Güncellenmiş limit
+        "difficulty_levels": ["kolay", "orta", "zor"],
+        "supported_languages": ["tr", "en"],
+        "model": MODEL_NAME,
+        "version": "2.0.0",
+        "validation": {
+            "grade_range": "1-12",
+            "questions_range": "1-10", 
+            "question_types": ["coktan_secmeli", "acik_uclu"],
+            "subject_normalization": True,
+            "pydantic_validation": True
+        }
+    }
 
 @app.get("/models")
 async def get_model_info():

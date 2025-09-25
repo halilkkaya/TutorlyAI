@@ -16,6 +16,26 @@ embedding_model = None
 text_splitter = None
 hybrid_retriever = None
 
+def normalize_turkish_chars(text: str) -> str:
+    """Türkçe karakterleri normal harflere çevirir"""
+    if not text:
+        return text
+    
+    turkish_chars = {
+        'ç': 'c', 'Ç': 'C',
+        'ğ': 'g', 'Ğ': 'G', 
+        'ı': 'i', 'I': 'I',
+        'ö': 'o', 'Ö': 'O',
+        'ş': 's', 'Ş': 'S',
+        'ü': 'u', 'Ü': 'U'
+    }
+    
+    normalized = text
+    for turkish_char, normal_char in turkish_chars.items():
+        normalized = normalized.replace(turkish_char, normal_char)
+    
+    return normalized
+
 
 # RAG sistem fonksiyonları
 def initialize_rag_system():
@@ -24,7 +44,7 @@ def initialize_rag_system():
     
     try:
         print("[RAG] Sistem başlatılıyor...")
-        device = "cpu"
+        device = "cuda"
 
         # Embedding modeli
         embedding_model = HuggingFaceEmbeddings(
@@ -221,14 +241,25 @@ def search_books_enhanced(query: str, filters: Optional[Dict[str, Any]] = None,
         
         # ChromaDB filtreleme formatı (sadece arama alanını belirler)
         if filters:
-            if len(filters) > 1:
+            # Filtreleri normalize et (özellikle konu_slug için)
+            normalized_filters = {}
+            for key, value in filters.items():
+                if key == 'konu_slug' and isinstance(value, str):
+                    # konu_slug'ı Türkçe karakterlerden arındır
+                    normalized_value = normalize_turkish_chars(value).lower()
+                    normalized_filters[key] = normalized_value
+                    print(f"[SEARCH] konu_slug normalize edildi: '{value}' → '{normalized_value}'")
+                else:
+                    normalized_filters[key] = value
+            
+            if len(normalized_filters) > 1:
                 where_clause = {
                     "$and": [
-                        {key: {"$eq": value}} for key, value in filters.items()
+                        {key: {"$eq": value}} for key, value in normalized_filters.items()
                     ]
                 }
             else:
-                key, value = list(filters.items())[0]
+                key, value = list(normalized_filters.items())[0]
                 where_clause = {key: {"$eq": value}}
             
             search_kwargs["filter"] = where_clause
@@ -255,8 +286,14 @@ def search_books_enhanced(query: str, filters: Optional[Dict[str, Any]] = None,
                 filtered_bm25_results = []
                 for doc, score in bm25_results:
                     match = True
-                    for filter_key, filter_value in filters.items():
-                        if doc.metadata.get(filter_key) != filter_value:
+                    for filter_key, filter_value in normalized_filters.items():
+                        doc_value = doc.metadata.get(filter_key)
+                        
+                        # Eğer konu_slug karşılaştırması yapılıyorsa normalize et
+                        if filter_key == 'konu_slug' and isinstance(doc_value, str):
+                            doc_value = normalize_turkish_chars(doc_value).lower()
+                        
+                        if doc_value != filter_value:
                             match = False
                             break
                     if match:

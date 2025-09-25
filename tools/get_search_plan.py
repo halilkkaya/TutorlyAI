@@ -3,6 +3,7 @@ from typing import Dict, Any
 import json
 import re
 from tools.system_prompt import QUERY_PLANNER_SYSTEM_PROMPT
+from tools.subject_normalizer import normalize_subject_name, validate_subject
 
 MODEL_NAME = "google/gemini-2.5-flash"
 FAL_MODEL_GATEWAY = "fal-ai/any-llm"
@@ -36,11 +37,37 @@ async def get_search_plan(user_prompt: str) -> Dict[str, Any]:
         clean_json = json_match.group(0)
         plan = json.loads(clean_json)
         
-        # Plan doğrulama
+        # Plan doğrulama ve normalizasyon
         if "query" not in plan:
             plan["query"] = user_prompt
         if "filters" not in plan:
             plan["filters"] = {}
+        
+        # Ders adını normalize et
+        if "ders" in plan["filters"] and plan["filters"]["ders"]:
+            original_subject = plan["filters"]["ders"]
+            normalized_subject = normalize_subject_name(original_subject)
+            
+            if normalized_subject:
+                plan["filters"]["ders"] = normalized_subject
+                if original_subject != normalized_subject:
+                    print(f"[PLANNER] Ders adı normalize edildi: '{original_subject}' -> '{normalized_subject}'")
+            else:
+                print(f"[PLANNER] ⚠️  Geçersiz ders adı kaldırıldı: '{original_subject}'")
+                del plan["filters"]["ders"]
+        
+        # Sınıf doğrulaması
+        if "sinif" in plan["filters"]:
+            try:
+                sinif = int(plan["filters"]["sinif"])
+                if sinif not in [9, 10, 11, 12]:
+                    print(f"[PLANNER] ⚠️  Geçersiz sınıf kaldırıldı: {sinif}")
+                    del plan["filters"]["sinif"]
+                else:
+                    plan["filters"]["sinif"] = sinif
+            except (ValueError, TypeError):
+                print(f"[PLANNER] ⚠️  Geçersiz sınıf formatı kaldırıldı: {plan['filters']['sinif']}")
+                del plan["filters"]["sinif"]
         
         # Boş filtreleri temizle
         plan["filters"] = {k: v for k, v in plan["filters"].items() 
