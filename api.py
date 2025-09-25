@@ -5,6 +5,10 @@ import google.generativeai as genai
 import os
 from typing import Optional
 from dotenv import load_dotenv
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 
 # FastAPI uygulaması oluştur

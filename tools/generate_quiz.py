@@ -12,6 +12,9 @@ from typing import List, Dict, Any
 from tools.classes import QuizRequest, QuizResponse
 from tools.quiz_prompts import get_quiz_system_prompt, build_quiz_prompt
 from tools.subject_normalizer import normalize_subject_name, validate_subject
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 MODEL_NAME = "google/gemini-2.5-flash"
 FAL_MODEL_GATEWAY = "fal-ai/any-llm"
@@ -27,7 +30,7 @@ async def generate_quiz(request: QuizRequest) -> QuizResponse:
         QuizResponse: Oluşturulan quiz
     """
     try:
-        print(f"[QUIZ] Quiz generation başlatılıyor: {request.soru_sayisi} {request.soru_tipi} soru")
+        logger.info(f"[QUIZ] Quiz generation başlatılıyor: {request.soru_sayisi} {request.soru_tipi} soru")
         
         # 1. Input validation - Pydantic otomatik yapar, bu adım gereksiz
         # Eğer request buraya kadar geldiyse zaten valid demektir
@@ -35,10 +38,10 @@ async def generate_quiz(request: QuizRequest) -> QuizResponse:
         # 2. Subject normalization
         normalized_subject = normalize_subject_name(request.ders)
         if not normalized_subject:
-            print(f"[QUIZ] ⚠️  Ders adı normalize edilemedi: '{request.ders}', orijinal kullanılıyor")
+            logger.warning(f"[QUIZ] ⚠️  Ders adı normalize edilemedi: '{request.ders}', orijinal kullanılıyor")
             normalized_subject = request.ders
         else:
-            print(f"[QUIZ] Ders adı normalize edildi: '{request.ders}' -> '{normalized_subject}'")
+            logger.info(f"[QUIZ] Ders adı normalize edildi: '{request.ders}' -> '{normalized_subject}'")
         
         # 3. System prompt ve user prompt hazırla
         system_prompt = get_quiz_system_prompt(request.soru_tipi)
@@ -50,7 +53,7 @@ async def generate_quiz(request: QuizRequest) -> QuizResponse:
             zorluk=request.zorluk
         )
         
-        print(f"[QUIZ] Prompt hazırlandı - Sınıf: {request.sinif}, Ders: {normalized_subject}, Konu: {request.konu}")
+        logger.info(f"[QUIZ] Prompt hazırlandı - Sınıf: {request.sinif}, Ders: {normalized_subject}, Konu: {request.konu}")
         
         # 4. Model'i çağır
         result = await fal_client.run_async(
@@ -65,7 +68,7 @@ async def generate_quiz(request: QuizRequest) -> QuizResponse:
         )
         
         response_text = result.get("output", "[]").strip()
-        print(f"[QUIZ] Model yanıtı alındı: {len(response_text)} karakter")
+        logger.info(f"[QUIZ] Model yanıtı alındı: {len(response_text)} karakter")
         
         # 5. JSON parse et
         questions_data = _parse_quiz_response(response_text, request.soru_tipi)
@@ -91,11 +94,11 @@ async def generate_quiz(request: QuizRequest) -> QuizResponse:
             created_at=datetime.now().isoformat()
         )
         
-        print(f"[QUIZ] ✅ Quiz başarıyla oluşturuldu: {len(questions_data)} soru")
+        logger.info(f"[QUIZ] ✅ Quiz başarıyla oluşturuldu: {len(questions_data)} soru")
         return quiz_response
         
     except Exception as e:
-        print(f"[QUIZ ERROR] Quiz oluşturma hatası: {str(e)}")
+        logger.error(f"[QUIZ ERROR] Quiz oluşturma hatası: {str(e)}")
         traceback.print_exc()
         raise
 
@@ -110,7 +113,7 @@ def _parse_quiz_response(response_text: str, question_type: str) -> List[Dict[st
         json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
         
         if not json_match:
-            print("[QUIZ] JSON array bulunamadı, response'un tamamını parse etmeye çalışılıyor...")
+            logger.warning("[QUIZ] JSON array bulunamadı, response'un tamamını parse etmeye çalışılıyor...")
             # Tüm response'u parse etmeye çalış
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
@@ -136,18 +139,18 @@ def _parse_quiz_response(response_text: str, question_type: str) -> List[Dict[st
         for i, question in enumerate(questions_data):
             if _validate_question_format(question, question_type):
                 validated_questions.append(question)
-                print(f"[QUIZ] ✓ Soru {i+1} geçerli")
+                logger.info(f"[QUIZ] ✓ Soru {i+1} geçerli")
             else:
-                print(f"[QUIZ] ✗ Soru {i+1} geçersiz format, atlanıyor")
+                logger.warning(f"[QUIZ] ✗ Soru {i+1} geçersiz format, atlanıyor")
         
         return validated_questions
         
     except json.JSONDecodeError as e:
-        print(f"[QUIZ] JSON parse hatası: {e}")
-        print(f"[QUIZ] Response text: {response_text[:500]}...")
+        logger.error(f"[QUIZ] JSON parse hatası: {e}")
+        logger.error(f"[QUIZ] Response text: {response_text[:500]}...")
         return []
     except Exception as e:
-        print(f"[QUIZ] Parse hatası: {e}")
+        logger.error(f"[QUIZ] Parse hatası: {e}")
         return []
 
 
@@ -158,24 +161,24 @@ def _validate_question_format(question: Dict[str, Any], question_type: str) -> b
             required_fields = ["soru", "a", "b", "c", "d", "cevap", "aciklama"]
             for field in required_fields:
                 if field not in question or not question[field]:
-                    print(f"[QUIZ] Eksik field: {field}")
+                    logger.warning(f"[QUIZ] Eksik field: {field}")
                     return False
             
             # Cevap şıkkı kontrolü
             if question["cevap"].lower() not in ["a", "b", "c", "d"]:
-                print(f"[QUIZ] Geçersiz cevap şıkkı: {question['cevap']}")
+                logger.warning(f"[QUIZ] Geçersiz cevap şıkkı: {question['cevap']}")
                 return False
                 
         elif question_type == "acik_uclu":
             required_fields = ["soru", "cevap", "aciklama"]
             for field in required_fields:
                 if field not in question or not question[field]:
-                    print(f"[QUIZ] Eksik field: {field}")
+                    logger.warning(f"[QUIZ] Eksik field: {field}")
                     return False
         
         return True
         
     except Exception as e:
-        print(f"[QUIZ] Validation error: {e}")
+        logger.error(f"[QUIZ] Validation error: {e}")
         return False
 

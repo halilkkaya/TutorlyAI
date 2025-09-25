@@ -4,13 +4,16 @@ import json
 import re
 from tools.system_prompt import QUERY_PLANNER_SYSTEM_PROMPT
 from tools.subject_normalizer import normalize_subject_name, validate_subject
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 MODEL_NAME = "google/gemini-2.5-flash"
 FAL_MODEL_GATEWAY = "fal-ai/any-llm"
  
 async def get_search_plan(user_prompt: str) -> Dict[str, Any]:
     """Kullanıcı sorgusundan arama planı oluşturur"""
-    print(f"[PLANNER] Sorgu analizi: '{user_prompt}'")
+    logger.info(f"[PLANNER] Sorgu analizi: '{user_prompt}'")
     
     try:
         result = await fal_client.run_async(
@@ -25,13 +28,13 @@ async def get_search_plan(user_prompt: str) -> Dict[str, Any]:
         )
         
         response_text = result.get("output", "{}").strip()
-        print(f"[PLANNER] Model yanıtı: {response_text}")
+        logger.info(f"[PLANNER] Model yanıtı: {response_text}")
         
         # JSON'u çıkar
         json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response_text, re.DOTALL)
         
         if not json_match:
-            print("[PLANNER] JSON bulunamadı, varsayılan plan kullanılıyor")
+            logger.warning("[PLANNER] JSON bulunamadı, varsayılan plan kullanılıyor")
             return {"query": user_prompt, "filters": {}}
         
         clean_json = json_match.group(0)
@@ -51,9 +54,9 @@ async def get_search_plan(user_prompt: str) -> Dict[str, Any]:
             if normalized_subject:
                 plan["filters"]["ders"] = normalized_subject
                 if original_subject != normalized_subject:
-                    print(f"[PLANNER] Ders adı normalize edildi: '{original_subject}' -> '{normalized_subject}'")
+                    logger.info(f"[PLANNER] Ders adı normalize edildi: '{original_subject}' -> '{normalized_subject}'")
             else:
-                print(f"[PLANNER] ⚠️  Geçersiz ders adı kaldırıldı: '{original_subject}'")
+                logger.warning(f"[PLANNER] ⚠️  Geçersiz ders adı kaldırıldı: '{original_subject}'")
                 del plan["filters"]["ders"]
         
         # Sınıf doğrulaması
@@ -61,21 +64,21 @@ async def get_search_plan(user_prompt: str) -> Dict[str, Any]:
             try:
                 sinif = int(plan["filters"]["sinif"])
                 if sinif not in [9, 10, 11, 12]:
-                    print(f"[PLANNER] ⚠️  Geçersiz sınıf kaldırıldı: {sinif}")
+                    logger.warning(f"[PLANNER] ⚠️  Geçersiz sınıf kaldırıldı: {sinif}")
                     del plan["filters"]["sinif"]
                 else:
                     plan["filters"]["sinif"] = sinif
             except (ValueError, TypeError):
-                print(f"[PLANNER] ⚠️  Geçersiz sınıf formatı kaldırıldı: {plan['filters']['sinif']}")
+                logger.warning(f"[PLANNER] ⚠️  Geçersiz sınıf formatı kaldırıldı: {plan['filters']['sinif']}")
                 del plan["filters"]["sinif"]
         
         # Boş filtreleri temizle
         plan["filters"] = {k: v for k, v in plan["filters"].items() 
                           if v is not None and str(v).strip() != ""}
         
-        print(f"[PLANNER] Final plan: {plan}")
+        logger.info(f"[PLANNER] Final plan: {plan}")
         return plan
         
     except Exception as e:
-        print(f"[PLANNER] Hata: {e}")
+        logger.error(f"[PLANNER] Hata: {e}")
         return {"query": user_prompt, "filters": {}}

@@ -137,5 +137,5 @@ Zorluk: {zorluk} ({zorluk_aciklama.get(zorluk, "orta seviye")})
 
 Bu parametrelere göre {soru_sayisi} adet kaliteli soru hazırla. Sorular {sinif}. sınıf {ders} dersi "{konu}" konusu kapsamında olmalı.
 
-Soruları müfredata uygun, anlaşılır ve eğitici şekilde hazırla.
+Soruları müfredata uygun, anlaşılır ve eğitici şekilde hazırla. sınıf'a önem ver. düşük sınıflara daha basit sorular sor. zorluk seviyesine uygun sorular sor.
 """

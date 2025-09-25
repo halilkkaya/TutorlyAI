@@ -5,6 +5,9 @@ Model'in gönderdiği ders adlarını kanonik forma çevirir
 
 import re
 from typing import Optional
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def normalize_turkish_chars(text: str) -> str:
     """Türkçe karakterleri normal harflere çevirir"""
@@ -156,13 +159,13 @@ def normalize_subject_name(subject_name: str) -> Optional[str]:
     # Direct match dene
     if normalized in COMPREHENSIVE_SUBJECT_MAPPING:
         result = COMPREHENSIVE_SUBJECT_MAPPING[normalized]
-        print(f"[SUBJECT_NORM] '{subject_name}' -> '{result}' (direct match)")
+        logger.info(f"[SUBJECT_NORM] '{subject_name}' -> '{result}' (direct match)")
         return result
     
     # Alt çizgili versiyonu dene
     if normalized_underscore in COMPREHENSIVE_SUBJECT_MAPPING:
         result = COMPREHENSIVE_SUBJECT_MAPPING[normalized_underscore]
-        print(f"[SUBJECT_NORM] '{subject_name}' -> '{result}' (underscore match)")
+        logger.info(f"[SUBJECT_NORM] '{subject_name}' -> '{result}' (underscore match)")
         return result
     
     # Partial match dene - uzun pattern'lar önce (daha spesifik eşleşmeler)
@@ -171,17 +174,17 @@ def normalize_subject_name(subject_name: str) -> Optional[str]:
     for pattern, canonical in patterns_by_length:
         # Pattern'in normalized içinde geçip geçmediğini kontrol et
         if pattern in normalized:
-            print(f"[SUBJECT_NORM] '{subject_name}' -> '{canonical}' (partial match: '{pattern}')")
+            logger.info(f"[SUBJECT_NORM] '{subject_name}' -> '{canonical}' (partial match: '{pattern}')")
             return canonical
     
     # Tersine partial match - normalized'ın pattern içinde geçmesi
     for pattern, canonical in patterns_by_length:
         if normalized in pattern and len(normalized) > 3:  # Çok kısa kelimelerle eşleşmesin
-            print(f"[SUBJECT_NORM] '{subject_name}' -> '{canonical}' (reverse partial match: '{pattern}')")
+            logger.info(f"[SUBJECT_NORM] '{subject_name}' -> '{canonical}' (reverse partial match: '{pattern}')")
             return canonical
     
     # Eğer hiçbir şey bulunamazsa log ve None döndür
-    print(f"[SUBJECT_NORM] ⚠️  '{subject_name}' -> TANINAMADI")
+    logger.warning(f"[SUBJECT_NORM] ⚠️  '{subject_name}' -> TANINAMADI")
     return None
 
 def get_valid_subjects() -> list:

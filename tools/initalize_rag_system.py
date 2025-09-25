@@ -10,6 +10,9 @@ import traceback
 from langchain.schema import Document
 from PyPDF2 import PdfReader
 from typing import Dict, Any, List, Optional
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 vectorstore = None
 embedding_model = None
@@ -43,7 +46,7 @@ def initialize_rag_system():
     global vectorstore, embedding_model, text_splitter, hybrid_retriever
     
     try:
-        print("[RAG] Sistem başlatılıyor...")
+        logger.info("[RAG] Sistem başlatılıyor... (logger ile)")
         device = "cuda"
 
         # Embedding modeli
@@ -52,7 +55,7 @@ def initialize_rag_system():
             model_kwargs={'device': device},
             encode_kwargs={'normalize_embeddings': True}
         )
-        print("[RAG] Embedding model yüklendi")
+        logger.info("[RAG] Embedding model yüklendi")
         
         # Text splitter
         text_splitter = RecursiveCharacterTextSplitter(
@@ -61,7 +64,7 @@ def initialize_rag_system():
             length_function=len,
             separators=["\n\n", "\n", ". ", ", ", " ", ""]
         )
-        print("[RAG] Text splitter hazırlandı")
+        logger.info("[RAG] Text splitter hazırlandı")
         
         # ChromaDB
         vectorstore = Chroma(
@@ -69,16 +72,16 @@ def initialize_rag_system():
             embedding_function=embedding_model,
             persist_directory="./chroma_db_v2"  # Yeni versiyon için farklı klasör
         )
-        print("[RAG] ChromaDB bağlandı")
+        logger.info("[RAG] ChromaDB bağlandı")
         
         # Hibrit retriever'ı başlat
         hybrid_retriever = HybridRetriever(vectorstore, embedding_model)
-        print("[RAG] Hibrit retriever başlatıldı")
+        logger.info("[RAG] Hibrit retriever başlatıldı")
         
         return True
         
     except Exception as e:
-        print(f"[RAG ERROR] Başlatma hatası: {str(e)}")
+        logger.error(f"[RAG ERROR] Başlatma hatası: {str(e)}")
         return False
 
 
@@ -93,14 +96,14 @@ def should_load_books():
         doc_count = vectorstore._collection.count()
         pdf_count = len(glob.glob("books/*.pdf"))
         
-        print(f"[RAG] ChromaDB'de {doc_count} doküman var")
-        print(f"[RAG] books/ klasöründe {pdf_count} PDF var")
+        logger.info(f"[RAG] ChromaDB'de {doc_count} doküman var")
+        logger.info(f"[RAG] books/ klasöründe {pdf_count} PDF var")
         
         # Eğer hiç doküman yoksa veya çok az varsa yükle
         return doc_count < (pdf_count * 5)  # Her PDF en az 5 chunk üretmeli
         
     except Exception as e:
-        print(f"[RAG] Kontrol hatası: {str(e)}")
+        logger.error(f"[RAG] Kontrol hatası: {str(e)}")
         return True
 
 
@@ -109,20 +112,20 @@ async def load_books_async():
     global vectorstore, text_splitter
     
     if not vectorstore or not text_splitter:
-        print("[RAG] Sistem başlatılmamış")
+        logger.error("[RAG] Sistem başlatılmamış")
         return False
     
     try:
-        print("[RAG] Kitaplar yükleniyor...")
+        logger.info("[RAG] Kitaplar yükleniyor...")
         
         # PDF dosyalarını bul
         pdf_files = glob.glob("books/*.pdf")   
         
         if not pdf_files:
-            print("[RAG] books/ klasöründe PDF bulunamadı")
+            logger.error("[RAG] books/ klasöründe PDF bulunamadı")
             return False
         
-        print(f"[RAG] {len(pdf_files)} PDF dosyası bulundu")
+        logger.info(f"[RAG] {len(pdf_files)} PDF dosyası bulundu")
         
         all_documents = []
         successful_files = 0
@@ -130,19 +133,19 @@ async def load_books_async():
         for pdf_path in pdf_files:
             try:
                 filename = Path(pdf_path).name
-                print(f"[RAG] İşleniyor: {filename}")
+                logger.info(f"[RAG] İşleniyor: {filename}")
                 
                 # Metadata çıkar
                 metadata = parse_filename_for_metadata(filename)
                 if not metadata:
-                    print(f"[RAG] UYARI: {filename} format uyumsuz, atlanıyor")
+                    logger.warning(f"[RAG] UYARI: {filename} format uyumsuz, atlanıyor")
                     continue
                 
                 # PDF oku
                 reader = PdfReader(pdf_path)
                 full_text = ""
                 
-                print(f"[RAG] {filename}: {len(reader.pages)} sayfa okunuyor...")
+                logger.info(f"[RAG] {filename}: {len(reader.pages)} sayfa okunuyor...")
                 
                 for page_num, page in enumerate(reader.pages):
                     try:
@@ -152,16 +155,16 @@ async def load_books_async():
                             text = re.sub(r'\s+', ' ', text).strip()
                             full_text += text + "\n"
                     except Exception as e:
-                        print(f"[RAG] Sayfa {page_num} okuma hatası: {e}")
+                        logger.error(f"[RAG] Sayfa {page_num} okuma hatası: {e}")
                         continue
                 
                 if not full_text.strip():
-                    print(f"[RAG] UYARI: {filename} metin çıkarılamadı")
+                    logger.warning(f"[RAG] UYARI: {filename} metin çıkarılamadı")
                     continue
                 
                 # Chunk'lara ayır
                 chunks = text_splitter.split_text(full_text)
-                print(f"[RAG] {filename}: {len(chunks)} chunk oluşturuldu")
+                logger.info(f"[RAG] {filename}: {len(chunks)} chunk oluşturuldu")
                 
                 # Döküman objelerini oluştur
                 for i, chunk in enumerate(chunks):
@@ -180,30 +183,30 @@ async def load_books_async():
                         ))
                 
                 successful_files += 1
-                print(f"[RAG] {filename} başarıyla işlendi")
+                logger.info(f"[RAG] {filename} başarıyla işlendi")
                 
             except Exception as e:
-                print(f"[RAG] {pdf_path} işlenirken hata: {str(e)}")
+                logger.error(f"[RAG] {pdf_path} işlenirken hata: {str(e)}")
                 continue
         
         if all_documents:
-            print(f"[RAG] {len(all_documents)} doküman ChromaDB'ye ekleniyor...")
+            logger.info(f"[RAG] {len(all_documents)} doküman ChromaDB'ye ekleniyor...")
             
             # Batch olarak ekle (büyük dosyalar için)
             batch_size = 100
             for i in range(0, len(all_documents), batch_size):
                 batch = all_documents[i:i + batch_size]
                 vectorstore.add_documents(batch)
-                print(f"[RAG] Batch {i//batch_size + 1}/{(len(all_documents)-1)//batch_size + 1} eklendi")
+                logger.info(f"[RAG] Batch {i//batch_size + 1}/{(len(all_documents)-1)//batch_size + 1} eklendi")
             
-            print(f"[RAG] BAŞARILI: {successful_files} dosya, {len(all_documents)} chunk yüklendi")
+            logger.info(f"[RAG] BAŞARILI: {successful_files} dosya, {len(all_documents)} chunk yüklendi")
             return True
         else:
-            print("[RAG] Hiç doküman oluşturulamadı")
+            logger.error("[RAG] Hiç doküman oluşturulamadı")
             return False
             
     except Exception as e:
-        print(f"[RAG] Kitap yükleme genel hatası: {str(e)}")
+        logger.error(f"[RAG] Kitap yükleme genel hatası: {str(e)}")
         traceback.print_exc()
         return False
 
@@ -228,13 +231,13 @@ def search_books_enhanced(query: str, filters: Optional[Dict[str, Any]] = None,
     global vectorstore, hybrid_retriever
     
     if not vectorstore:
-        print("[SEARCH] RAG sistemi aktif değil")
+        logger.error("[SEARCH] RAG sistemi aktif değil")
         return []
     
     try:
-        print(f"[SEARCH] Arama başlatılıyor: '{query}'")
-        print(f"[SEARCH] Filtreler: {filters}")
-        print(f"[SEARCH] Score threshold: {score_threshold}")
+        logger.info(f"[SEARCH] Arama başlatılıyor: '{query}'")
+        logger.info(f"[SEARCH] Filtreler: {filters}")
+        logger.info(f"[SEARCH] Score threshold: {score_threshold}")
         
         # Arama parametreleri
         search_kwargs = {"k": k * 2}  # Daha fazla sonuç al, sonra filtrele
@@ -248,7 +251,7 @@ def search_books_enhanced(query: str, filters: Optional[Dict[str, Any]] = None,
                     # konu_slug'ı Türkçe karakterlerden arındır
                     normalized_value = normalize_turkish_chars(value).lower()
                     normalized_filters[key] = normalized_value
-                    print(f"[SEARCH] konu_slug normalize edildi: '{value}' → '{normalized_value}'")
+                    logger.info(f"[SEARCH] konu_slug normalize edildi: '{value}' → '{normalized_value}'")
                 else:
                     normalized_filters[key] = value
             
@@ -263,20 +266,20 @@ def search_books_enhanced(query: str, filters: Optional[Dict[str, Any]] = None,
                 where_clause = {key: {"$eq": value}}
             
             search_kwargs["filter"] = where_clause
-            print(f"[SEARCH] ChromaDB filtre: {where_clause}")
+            logger.info(f"[SEARCH] ChromaDB filtre: {where_clause}")
         
         # Hibrit arama kullan
         if use_hybrid and hybrid_retriever:
-            print("[SEARCH] Hibrit arama modeli kullanılıyor...")
+            logger.info("[SEARCH] Hibrit arama modeli kullanılıyor...")
             
             # Hibrit arama için BM25 index hazırla
             if not hybrid_retriever.is_indexed:
-                print("[SEARCH] BM25 index oluşturuluyor...")
+                logger.info("[SEARCH] BM25 index oluşturuluyor...")
                 hybrid_retriever.build_bm25_index()
             
             # 1. Semantic search (filtrelenmiş alanda)
             semantic_docs_with_scores = vectorstore.similarity_search_with_score(query, **search_kwargs)
-            print(f"[SEARCH] Semantic sonuç: {len(semantic_docs_with_scores)}")
+            logger.info(f"[SEARCH] Semantic sonuç: {len(semantic_docs_with_scores)}")
             
             # 2. BM25 search (tüm dokümanlar üzerinde, sonra filtrele)
             bm25_results = hybrid_retriever._calculate_bm25_scores(query, k * 2)
@@ -300,7 +303,7 @@ def search_books_enhanced(query: str, filters: Optional[Dict[str, Any]] = None,
                         filtered_bm25_results.append((doc, score))
                 bm25_results = filtered_bm25_results
             
-            print(f"[SEARCH] BM25 sonuç: {len(bm25_results)}")
+            logger.info(f"[SEARCH] BM25 sonuç: {len(bm25_results)}")
             
             # 3. Skorları birleştir ve hibrit skor hesapla
             final_results = []
@@ -347,10 +350,10 @@ def search_books_enhanced(query: str, filters: Optional[Dict[str, Any]] = None,
                     doc.metadata['bm25_score'] = scores['bm25_score']
                     final_results.append((doc, hybrid_score))
                     
-                    print(f"[SEARCH] ✓ Kabul: {doc.metadata.get('source', 'N/A')} - "
+                    logger.info(f"[SEARCH] ✓ Kabul: {doc.metadata.get('source', 'N/A')} - "
                           f"Hibrit: {hybrid_score:.3f} (S:{scores['semantic_score']:.3f}, BM25:{scores['bm25_score']:.3f})")
                 else:
-                    print(f"[SEARCH] ✗ Ret: {scores['doc'].metadata.get('source', 'N/A')} - "
+                    logger.info(f"[SEARCH] ✗ Ret: {scores['doc'].metadata.get('source', 'N/A')} - "
                           f"Hibrit: {hybrid_score:.3f} (threshold: {score_threshold})")
             
             # Hibrit skora göre sırala
@@ -359,7 +362,7 @@ def search_books_enhanced(query: str, filters: Optional[Dict[str, Any]] = None,
             
         else:
             # Geleneksel semantic search
-            print("[SEARCH] Geleneksel semantic search kullanılıyor...")
+            logger.info("[SEARCH] Geleneksel semantic search kullanılıyor...")
             docs_with_scores = vectorstore.similarity_search_with_score(query, **search_kwargs)
             
             final_docs = []
@@ -372,24 +375,24 @@ def search_books_enhanced(query: str, filters: Optional[Dict[str, Any]] = None,
                     doc.metadata['bm25_score'] = 0.0
                     final_docs.append(doc)
                     
-                    print(f"[SEARCH] ✓ Kabul: {doc.metadata.get('source', 'N/A')} - "
+                    logger.info(f"[SEARCH] ✓ Kabul: {doc.metadata.get('source', 'N/A')} - "
                           f"Score: {similarity_score:.3f}")
                 else:
-                    print(f"[SEARCH] ✗ Ret: {doc.metadata.get('source', 'N/A')} - "
+                    logger.info(f"[SEARCH] ✗ Ret: {doc.metadata.get('source', 'N/A')} - "
                           f"Score: {similarity_score:.3f} (threshold: {score_threshold})")
             
             final_docs = final_docs[:k]
         
-        print(f"[SEARCH] Final: {len(final_docs)} sonuç döndürülüyor")
+        logger.info(f"[SEARCH] Final: {len(final_docs)} sonuç döndürülüyor")
         
         # Eğer hiç sonuç yoksa Generate API'nin fallback mekanizması devreye girecek
         if not final_docs:
-            print(f"[SEARCH] Hiç doküman threshold ({score_threshold}) değerini geçemedi, boş liste döndürülüyor")
+            logger.info(f"[SEARCH] Hiç doküman threshold ({score_threshold}) değerini geçemedi, boş liste döndürülüyor")
         
         return final_docs
         
     except Exception as e:
-        print(f"[SEARCH ERROR] Arama hatası: {str(e)}")
+        logger.error(f"[SEARCH ERROR] Arama hatası: {str(e)}")
         traceback.print_exc()
         return []
 

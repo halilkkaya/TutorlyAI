@@ -5,6 +5,9 @@ import json
 import traceback
 from typing import AsyncGenerator
 from tools.initalize_rag_system import search_books_enhanced
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 MODEL_NAME = "google/gemini-2.5-flash"
 FAL_MODEL_GATEWAY = "fal-ai/any-llm"
@@ -14,7 +17,7 @@ async def generate_stream(request: TextGenerationRequest) -> AsyncGenerator[str,
     """RAG entegreli streaming metin üretimi"""
     try:
         # 🔍 1. ADIM: RAG Araması (hızlı)
-        print(f"[STREAM] RAG araması başlatılıyor: '{request.prompt}'")
+        logger.info(f"[STREAM] RAG araması başlatılıyor: '{request.prompt}'")
         
         # Arama durumunu kullanıcıya bildir
         status_data = {
@@ -83,7 +86,7 @@ Bu soruyla ilgili ders kitaplarında spesifik bilgi bulamadım, ama genel bilgil
             sources = []
         
         # 🚀 3. ADIM: Streaming başlat
-        print(f"[STREAM] LLM streaming başlatılıyor...")
+        logger.info(f"[STREAM] LLM streaming başlatılıyor...")
         
         # Fal.ai stream_async kullan
         stream = fal_client.stream_async(
@@ -102,7 +105,7 @@ Bu soruyla ilgili ders kitaplarında spesifik bilgi bulamadım, ama genel bilgil
         # Stream'i dinle
         async for event in stream:
             # Event yapısını logla (debug için)
-            print(f"[STREAM DEBUG] Event: {event}")
+            logger.info(f"[STREAM DEBUG] Event: {event}")
             
             # Farklı event tiplerini kontrol et
             if isinstance(event, dict):
@@ -209,7 +212,7 @@ Bu soruyla ilgili ders kitaplarında spesifik bilgi bulamadım, ama genel bilgil
                 yield f"data: {json.dumps(chunk_data)}\n\n"
 
     except Exception as e:
-        print(f"[STREAM ERROR] {str(e)}")
+        logger.error(f"[STREAM ERROR] {str(e)}")
         traceback.print_exc()
         error_data = {
             "status": "error",

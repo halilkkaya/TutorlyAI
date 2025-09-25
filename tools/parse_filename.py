@@ -1,5 +1,7 @@
 import re
-
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 # RAG sistemi için global değişkenler
 vectorstore = None
 embedding_model = None
@@ -69,7 +71,7 @@ def parse_filename_for_metadata(filename: str):
     m = _PAT_FULL.match(filename)
     if not m:
         # Uymayan dosyaları sessizce geçmek yerine logla:
-        print(f"[PARSE_FILENAME] Uyumsuz dosya adı: {filename}")
+        logger.warning(f"[PARSE_FILENAME] Uyumsuz dosya adı: {filename}")
         return None
 
     grade = int(m.group("grade"))
@@ -86,5 +88,5 @@ def parse_filename_for_metadata(filename: str):
         "unite": unit,
         "konu_slug": normalized_slug
     }
-    print(f"[PARSE_FILENAME] Metadata ayrıştırıldı: {filename}, {meta}")
+    logger.info(f"[PARSE_FILENAME] Metadata ayrıştırıldı: {filename}, {meta}")
     return meta

@@ -8,7 +8,9 @@ from dotenv import load_dotenv
 import traceback
 import fal_client
 import glob
-
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 from tools.get_search_plan import get_search_plan
 from tools.generate_stream import generate_stream
 from tools.generate_quiz import generate_quiz
@@ -203,14 +205,14 @@ async def stream_text(request: TextGenerationRequest):
 async def generate_rag_answer(request: TextGenerationRequest):
     """RAG ile cevap üretir - Score threshold ile"""
     try:
-        print(f"[GENERATE] Gelen sorgu: '{request.prompt}'")
+        logger.info(f"[GENERATE] Gelen sorgu: '{request.prompt}'")
         
         # 1. Arama planı oluştur
         search_plan = await get_search_plan(request.prompt)
         query = search_plan.get("query", request.prompt)
         filters = search_plan.get("filters", {})
         
-        print(f"[GENERATE] Arama planı - Query: '{query}', Filters: {filters}")
+        logger.info(f"[GENERATE] Arama planı - Query: '{query}', Filters: {filters}")
         
         # 2. Hibrit arama stratejisi ile doküman bulma (request parametrelerini kullan)
         relevant_docs = search_books_enhanced(
@@ -225,7 +227,7 @@ async def generate_rag_answer(request: TextGenerationRequest):
         
         
         if not relevant_docs:
-            print("[GENERATE] Threshold'u geçen doküman bulunamadı")
+            logger.warning("[GENERATE] Threshold'u geçen doküman bulunamadı")
             
         
         # Sonuç olsun ya da olmasın, modele gönder
@@ -236,7 +238,7 @@ async def generate_rag_answer(request: TextGenerationRequest):
                 f"[{doc.metadata.get('source', 'Bilinmeyen')}]\n{doc.page_content}"
                 for doc in relevant_docs
             ])
-            print(f"[GENERATE] {len(relevant_docs)} kaliteli doküman bulundu")
+            logger.info(f"[GENERATE] {len(relevant_docs)} kaliteli doküman bulundu")
             
             # 4A. Dökümanlar bulunduğunda
             synthesis_prompt = f"""Sen bir ders kitabı uzmanısın. Aşağıdaki soruyu, verilen ders kitabı metinlerini kullanarak cevapla.
@@ -255,7 +257,7 @@ async def generate_rag_answer(request: TextGenerationRequest):
 
             CEVAP:"""
         else:
-            print("[GENERATE] Hiç kaliteli doküman bulunamadı, model kendi bilgisiyle cevap verecek")
+            logger.warning("[GENERATE] Hiç kaliteli doküman bulunamadı, model kendi bilgisiyle cevap verecek")
             
             # 4B. Hiç doküman bulunamadığında
             synthesis_prompt = f"""Sen bir ders kitabı uzmanısın. Kullanıcı soru sordu ancak ders kitaplarında bu konuyla yeterince benzer içerik bulunamadı.
@@ -320,7 +322,7 @@ async def generate_rag_answer(request: TextGenerationRequest):
         }
         
     except Exception as e:
-        print(f"[GENERATE ERROR] {str(e)}")
+        logger.error(f"[GENERATE ERROR] {str(e)}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -328,7 +330,7 @@ async def generate_rag_answer(request: TextGenerationRequest):
 async def generate_quiz_endpoint(request: QuizRequest):
     """Quiz soruları oluştur"""
     try:
-        print(f"[QUIZ API] Quiz generation request: {request.soru_sayisi} {request.soru_tipi} soru")
+        logger.info(f"[QUIZ API] Quiz generation request: {request.soru_sayisi} {request.soru_tipi} soru")
         
         quiz_response = await generate_quiz(request)
         
@@ -339,7 +341,7 @@ async def generate_quiz_endpoint(request: QuizRequest):
         }
         
     except ValidationError as e:
-        print(f"[QUIZ API] Pydantic validation error: {str(e)}")
+        logger.error(f"[QUIZ API] Pydantic validation error: {str(e)}")
         # Pydantic error'ını güzel formata çevir
         error_details = []
         for error in e.errors():
@@ -356,10 +358,10 @@ async def generate_quiz_endpoint(request: QuizRequest):
             }
         )
     except ValueError as e:
-        print(f"[QUIZ API] Generation error: {str(e)}")
+        logger.error(f"[QUIZ API] Generation error: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(f"[QUIZ API ERROR] {str(e)}")
+        logger.error(f"[QUIZ API ERROR] {str(e)}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Quiz oluşturma hatası: {str(e)}")
 
@@ -395,33 +397,33 @@ async def get_model_info():
 
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("Gelişmiş RAG Sistemi Başlatılıyor")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("Gelişmiş RAG Sistemi Başlatılıyor")
+    logger.info("=" * 60)
     
     # RAG sistemini başlat
     if initialize_rag_system():
-        print("[✓] RAG sistemi başlatıldı")
+        logger.info("[✓] RAG sistemi başlatıldı")
         
         # Kitapları yükle
         if should_load_books():
-            print("[INFO] Kitaplar yükleniyor...")
+            logger.info("[INFO] Kitaplar yükleniyor...")
             import asyncio
             success = asyncio.run(load_books_async())
             
             if success:
-                print("[✓] Kitaplar başarıyla yüklendi")
+                logger.info("[✓] Kitaplar başarıyla yüklendi")
             else:
-                print("[!] Kitap yükleme başarısız")
+                logger.warning("[!] Kitap yükleme başarısız")
         else:
-            print("[INFO] Kitaplar zaten yüklü")
+            logger.info("[INFO] Kitaplar zaten yüklü")
     else:
-        print("[✗] RAG sistemi başlatılamadı")
+        logger.warning("[✗] RAG sistemi başlatılamadı")
     
-    print("=" * 60)
-    print(f"Model: {MODEL_NAME}")
-    print("API başlatılıyor...")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info(f"Model: {MODEL_NAME}")
+    logger.info("API başlatılıyor...")
+    logger.info("=" * 60)
     
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

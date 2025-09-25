@@ -18,6 +18,9 @@ import os
 import glob
 from pathlib import Path
 from datetime import datetime
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def normalize_turkish_chars(text: str) -> str:
     """Türkçe karakterleri normal harflere çevirir"""
@@ -82,23 +85,23 @@ class HybridRetriever:
     def _initialize_cache_system(self):
         """Cache sistemini başlat - otomatik index yükleme/oluşturma"""
         try:
-            print("[CACHE] Smart cache sistemi başlatılıyor...")
+            logger.info("[CACHE] Smart cache sistemi başlatılıyor...")
             
             if self._is_cache_valid():
-                print("[CACHE] Geçerli cache bulundu, yükleniyor...")
+                logger.info("[CACHE] Geçerli cache bulundu, yükleniyor...")
                 if self._load_cache():
-                    print(f"[CACHE] ✓ Cache başarıyla yüklendi: {len(self.documents)} döküman")
+                    logger.info(f"[CACHE] ✓ Cache başarıyla yüklendi: {len(self.documents)} döküman")
                     return
                 else:
-                    print("[CACHE] Cache yükleme başarısız, yeni index oluşturuluyor...")
+                    logger.info("[CACHE] Cache yükleme başarısız, yeni index oluşturuluyor...")
             else:
-                print("[CACHE] Cache geçersiz veya bulunamadı, yeni index oluşturuluyor...")
+                logger.info("[CACHE] Cache geçersiz veya bulunamadı, yeni index oluşturuluyor...")
             
             # Cache yoksa veya geçersizse background'da oluştur
             self._schedule_index_rebuild()
             
         except Exception as e:
-            print(f"[CACHE ERROR] Cache sistemi başlatma hatası: {str(e)}")
+            logger.error(f"[CACHE ERROR] Cache sistemi başlatma hatası: {str(e)}")
             traceback.print_exc()
     
     def _is_cache_valid(self) -> bool:
@@ -108,7 +111,7 @@ class HybridRetriever:
             if not (self.bm25_index_path.exists() and 
                    self.index_meta_path.exists() and 
                    self.documents_cache_path.exists()):
-                print("[CACHE] Cache dosyaları eksik")
+                logger.warning("[CACHE] Cache dosyaları eksik")
                 return False
             
             # Metadata'yı oku
@@ -120,14 +123,14 @@ class HybridRetriever:
             cached_signature = cache_meta.get('content_signature', '')
             
             if current_signature != cached_signature:
-                print(f"[CACHE] İçerik değişmiş - Cached: {cached_signature[:8]}..., Current: {current_signature[:8]}...")
+                logger.warning(f"[CACHE] İçerik değişmiş - Cached: {cached_signature[:8]}..., Current: {current_signature[:8]}...")
                 return False
             
-            print(f"[CACHE] ✓ Cache geçerli - Signature: {current_signature[:8]}...")
+            logger.info(f"[CACHE] ✓ Cache geçerli - Signature: {current_signature[:8]}...")
             return True
             
         except Exception as e:
-            print(f"[CACHE] Cache validasyon hatası: {str(e)}")
+            logger.error(f"[CACHE] Cache validasyon hatası: {str(e)}")
             return False
     
     def _calculate_content_signature(self) -> str:
@@ -163,13 +166,13 @@ class HybridRetriever:
             return hashlib.md5(signature_str.encode('utf-8')).hexdigest()
             
         except Exception as e:
-            print(f"[CACHE] Signature hesaplama hatası: {str(e)}")
+            logger.error(f"[CACHE] Signature hesaplama hatası: {str(e)}")
             return str(datetime.now().timestamp())  # Fallback
     
     def _load_cache(self) -> bool:
         """Cache'den BM25 index ve dökümanları yükle"""
         try:
-            print("[CACHE] Cache dosyaları yükleniyor...")
+            logger.info("[CACHE] Cache dosyaları yükleniyor...")
             
             # BM25 index yükle
             with open(self.bm25_index_path, 'rb') as f:
@@ -185,13 +188,13 @@ class HybridRetriever:
             
             self.is_indexed = True
             
-            print(f"[CACHE] ✓ Cache yüklendi: {len(self.documents)} döküman, "
+            logger.info(f"[CACHE] ✓ Cache yüklendi: {len(self.documents)} döküman, "
                   f"Created: {meta.get('created_at', 'N/A')}")
             
             return True
             
         except Exception as e:
-            print(f"[CACHE] Cache yükleme hatası: {str(e)}")
+            logger.error(f"[CACHE] Cache yükleme hatası: {str(e)}")
             traceback.print_exc()
             
             # Hatalı cache dosyalarını temizle
@@ -201,7 +204,7 @@ class HybridRetriever:
     def _save_cache(self) -> bool:
         """BM25 index ve dökümanları cache'e kaydet"""
         try:
-            print("[CACHE] Cache kaydediliyor...")
+            logger.info("[CACHE] Cache kaydediliyor...")
             
             # BM25 index kaydet
             with open(self.bm25_index_path, 'wb') as f:
@@ -224,11 +227,11 @@ class HybridRetriever:
             with open(self.index_meta_path, 'w', encoding='utf-8') as f:
                 json.dump(meta, f, indent=2, ensure_ascii=False)
             
-            print(f"[CACHE] ✓ Cache kaydedildi: {len(self.documents)} döküman")
+            logger.info(f"[CACHE] ✓ Cache kaydedildi: {len(self.documents)} döküman")
             return True
             
         except Exception as e:
-            print(f"[CACHE] Cache kaydetme hatası: {str(e)}")
+            logger.error(f"[CACHE] Cache kaydetme hatası: {str(e)}")
             traceback.print_exc()
             return False
     
@@ -238,18 +241,18 @@ class HybridRetriever:
             for file_path in [self.bm25_index_path, self.documents_cache_path, self.index_meta_path]:
                 if file_path.exists():
                     file_path.unlink()
-                    print(f"[CACHE] Temizlendi: {file_path.name}")
+                    logger.info(f"[CACHE] Temizlendi: {file_path.name}")
         except Exception as e:
-            print(f"[CACHE] Temizleme hatası: {str(e)}")
+            logger.error(f"[CACHE] Temizleme hatası: {str(e)}")
     
     def _schedule_index_rebuild(self):
         """Index yeniden oluşturmayı planla (şimdilik sync)"""
-        print("[CACHE] Index yeniden oluşturuluyor...")
+        logger.info("[CACHE] Index yeniden oluşturuluyor...")
         self.build_bm25_index()
     
     def force_rebuild_cache(self):
         """Cache'i zorla yeniden oluştur"""
-        print("[CACHE] Cache zorla yeniden oluşturuluyor...")
+        logger.info("[CACHE] Cache zorla yeniden oluşturuluyor...")
         self._clean_cache_files()
         self.is_indexed = False
         self.bm25_index = None
@@ -282,21 +285,21 @@ class HybridRetriever:
     def build_bm25_index(self):
         """BM25 indexini oluştur ve cache'e kaydet"""
         try:
-            print("[HYBRID] BM25 index oluşturuluyor...")
+            logger.info("[HYBRID] BM25 index oluşturuluyor...")
             
             # Tüm dökümanları al
             collection = self.vectorstore._collection
             all_docs = collection.get()
             
             if not all_docs or 'documents' not in all_docs:
-                print("[HYBRID] Hiç döküman bulunamadı")
+                logger.warning("[HYBRID] Hiç döküman bulunamadı")
                 return False
             
             # Dökümanları hazırla
             self.documents = []
             processed_texts = []
             
-            print(f"[HYBRID] {len(all_docs['documents'])} döküman işleniyor...")
+            logger.info(f"[HYBRID] {len(all_docs['documents'])} döküman işleniyor...")
             
             for i, (doc_text, metadata) in enumerate(zip(all_docs['documents'], all_docs['metadatas'])):
                 # Document objesi oluştur
@@ -312,29 +315,29 @@ class HybridRetriever:
                 
                 # Progress log (her 100 döküman)
                 if (i + 1) % 100 == 0:
-                    print(f"[HYBRID] İşlendi: {i + 1}/{len(all_docs['documents'])}")
+                    logger.info(f"[HYBRID] İşlendi: {i + 1}/{len(all_docs['documents'])}")
             
             # BM25 indexini oluştur
             if processed_texts:
-                print("[HYBRID] BM25Okapi index hesaplanıyor...")
+                logger.info("[HYBRID] BM25Okapi index hesaplanıyor...")
                 self.bm25_index = BM25Okapi(processed_texts)
                 self.is_indexed = True
                 
-                print(f"[HYBRID] ✓ BM25 index oluşturuldu: {len(self.documents)} döküman")
+                logger.info(f"[HYBRID] ✓ BM25 index oluşturuldu: {len(self.documents)} döküman")
                 
                 # Cache'e kaydet
                 if self._save_cache():
-                    print("[HYBRID] ✓ Index cache'e kaydedildi")
+                    logger.info("[HYBRID] ✓ Index cache'e kaydedildi")
                 else:
-                    print("[HYBRID] ⚠ Cache kaydetme başarısız")
+                    logger.warning("[HYBRID] ⚠ Cache kaydetme başarısız")
                 
                 return True
             else:
-                print("[HYBRID] İşlenecek metin bulunamadı")
+                logger.warning("[HYBRID] İşlenecek metin bulunamadı")
                 return False
                 
         except Exception as e:
-            print(f"[HYBRID] BM25 index oluşturma hatası: {str(e)}")
+            logger.error(f"[HYBRID] BM25 index oluşturma hatası: {str(e)}")
             traceback.print_exc()
             
             # Hata durumunda cache'i temizle
@@ -367,7 +370,7 @@ class HybridRetriever:
             return doc_scores[:k]
             
         except Exception as e:
-            print(f"[HYBRID] BM25 skor hesaplama hatası: {str(e)}")
+            logger.error(f"[HYBRID] BM25 skor hesaplama hatası: {str(e)}")
             return []
     
     def _apply_metadata_filters(self, docs: List[Document], filters: Dict[str, Any]) -> List[Document]:
@@ -419,36 +422,36 @@ class HybridRetriever:
             score_threshold: Minimum skor threshold'u
         """
         try:
-            print(f"[HYBRID] Hibrit arama başlatılıyor: '{query}'")
-            print(f"[HYBRID] Ağırlıklar - Semantic: {semantic_weight}, BM25: {keyword_weight}")
+            logger.info(f"[HYBRID] Hibrit arama başlatılıyor: '{query}'")
+            logger.info(f"[HYBRID] Ağırlıklar - Semantic: {semantic_weight}, BM25: {keyword_weight}")
             
             # Index yoksa cache'den yükle veya oluştur
             if not self.is_indexed:
-                print("[HYBRID] BM25 index yok, cache kontrol ediliyor...")
+                logger.info("[HYBRID] BM25 index yok, cache kontrol ediliyor...")
                 
                 # Cache'den yüklemeye çalış
                 if self._is_cache_valid() and self._load_cache():
-                    print("[HYBRID] ✓ Cache'den yüklendi")
+                    logger.info("[HYBRID] ✓ Cache'den yüklendi")
                 else:
-                    print("[HYBRID] Cache yüklenemedi, yeni index oluşturuluyor...")
+                    logger.warning("[HYBRID] Cache yüklenemedi, yeni index oluşturuluyor...")
                     if not self.build_bm25_index():
-                        print("[HYBRID] BM25 index oluşturulamadı, sadece semantic search kullanılıyor")
+                        logger.warning("[HYBRID] BM25 index oluşturulamadı, sadece semantic search kullanılıyor")
                         return self._fallback_semantic_search(query, filters, k, score_threshold)
             
             # 1. Semantic search
             semantic_results = self._get_semantic_results(query, filters, k * 2)
-            print(f"[HYBRID] Semantic search: {len(semantic_results)} sonuç")
+            logger.info(f"[HYBRID] Semantic search: {len(semantic_results)} sonuç")
             
             # 2. BM25 keyword search
             bm25_results = self._calculate_bm25_scores(query, k * 2)
-            print(f"[HYBRID] BM25 search: {len(bm25_results)} sonuç")
+            logger.info(f"[HYBRID] BM25 search: {len(bm25_results)} sonuç")
             
             # 3. Metadata filtreleme (BM25 sonuçları için)
             if filters:
                 bm25_docs = [doc for doc, score in bm25_results]
                 filtered_bm25_docs = self._apply_metadata_filters(bm25_docs, filters)
                 bm25_results = [(doc, score) for doc, score in bm25_results if doc in filtered_bm25_docs]
-                print(f"[HYBRID] BM25 filtered: {len(bm25_results)} sonuç")
+                logger.info(f"[HYBRID] BM25 filtered: {len(bm25_results)} sonuç")
             
             # 4. Skorları normalize et ve birleştir
             final_results = self._combine_and_rank_results(
@@ -457,11 +460,11 @@ class HybridRetriever:
                 k, score_threshold
             )
             
-            print(f"[HYBRID] Final results: {len(final_results)} sonuç")
+            logger.info(f"[HYBRID] Final results: {len(final_results)} sonuç")
             
             # Detaylı loglar
             for i, doc in enumerate(final_results[:5]):
-                print(f"[HYBRID] Sonuç {i+1}: {doc.metadata.get('source', 'N/A')} - "
+                logger.info(f"[HYBRID] Sonuç {i+1}: {doc.metadata.get('source', 'N/A')} - "
                       f"Sınıf: {doc.metadata.get('sinif', 'N/A')} - "
                       f"Ders: {doc.metadata.get('ders', 'N/A')} - "
                       f"İçerik: {doc.page_content[:100]}...")
@@ -469,7 +472,7 @@ class HybridRetriever:
             return final_results
             
         except Exception as e:
-            print(f"[HYBRID] Hibrit arama hatası: {str(e)}")
+            logger.error(f"[HYBRID] Hibrit arama hatası: {str(e)}")
             traceback.print_exc()
             # Hata durumunda semantic search'e geri dön
             return self._fallback_semantic_search(query, filters, k, score_threshold)
@@ -513,7 +516,7 @@ class HybridRetriever:
             return semantic_results
             
         except Exception as e:
-            print(f"[HYBRID] Semantic search hatası: {str(e)}")
+            logger.error(f"[HYBRID] Semantic search hatası: {str(e)}")
             return []
     
     def _combine_and_rank_results(self, 
@@ -573,7 +576,7 @@ class HybridRetriever:
         
         # Eğer hiç sonuç yoksa log ekle
         if not final_results:
-            print(f"[HYBRID] Hiç doküman threshold ({score_threshold}) değerini geçemedi")
+            logger.warning(f"[HYBRID] Hiç doküman threshold ({score_threshold}) değerini geçemedi")
         
         return [doc for doc, _ in final_results[:k]]
     
@@ -598,7 +601,7 @@ class HybridRetriever:
     
     def _fallback_semantic_search(self, query: str, filters: Optional[Dict[str, Any]], k: int, score_threshold: float) -> List[Document]:
         """BM25 başarısız olursa semantic search'e geri dön - threshold düşürme YOK"""
-        print("[HYBRID] Fallback: Sadece semantic search kullanılıyor")
+        logger.info("[HYBRID] Fallback: Sadece semantic search kullanılıyor")
         semantic_results = self._get_semantic_results(query, filters, k)
         
         filtered_docs = []
@@ -612,6 +615,6 @@ class HybridRetriever:
         # Threshold'u geçen doküman yoksa boş liste döndür
         # Generate API kendi fallback mekanizmasını kullanacak
         if not filtered_docs:
-            print("[HYBRID] Threshold'u geçen doküman bulunamadı, boş liste döndürülüyor")
+            logger.warning("[HYBRID] Threshold'u geçen doküman bulunamadı, boş liste döndürülüyor")
         
         return filtered_docs[:k]
