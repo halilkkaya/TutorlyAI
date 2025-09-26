@@ -8,13 +8,14 @@ from dotenv import load_dotenv
 import traceback
 import fal_client
 import glob
+import re
 import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 from tools.get_search_plan import get_search_plan
 from tools.generate_stream import generate_stream
 from tools.generate_quiz import generate_quiz
-from tools.classes import TextGenerationRequest, QuizRequest
+from tools.classes import TextGenerationRequest, QuizRequest, EnglishLearningRequest, EnglishLearningResponse
 from tools.initalize_rag_system import initialize_rag_system, should_load_books, load_books_async, search_books_enhanced
 
 # Ortam değişkenlerini yükle
@@ -22,9 +23,9 @@ load_dotenv()
 
 # FastAPI uygulaması oluştur
 app = FastAPI(
-    title="TutorlyAI - Enhanced RAG & Quiz API",
-    description="Gelişmiş RAG sistemi ve Quiz oluşturma API'si - fal.ai Gemini 2.5 Flash ile güçlendirilmiş",
-    version="2.1.0"
+    title="TutorlyAI - Enhanced RAG, Quiz & English Learning API",
+    description="Gelişmiş RAG sistemi, Quiz oluşturma ve İngilizce öğrenme API'si - fal.ai Gemini 2.5 Flash ile güçlendirilmiş",
+    version="2.2.0"
 )
 
 # CORS ayarları
@@ -50,6 +51,97 @@ FAL_MODEL_GATEWAY = "fal-ai/any-llm"
 vectorstore = None
 embedding_model = None
 text_splitter = None
+
+# İngilizce seviyeleri için system promptları
+LEVEL_SYSTEM_PROMPTS = {
+    "a1": """Sen bir İngilizce öğretmenisin ve A1 seviyesindeki öğrencilerle çalışıyorsun. 
+A1 seviyesi için:
+- Çok basit kelimeler ve cümleler kullan
+- Present Simple tense'i tercih et
+- Günlük yaşamdan örnekler ver
+- Kısa ve net açıklamalar yap
+- Temel kelime dağarcığı kullan (merhaba, teşekkürler, aile, renkler, sayılar vb.)
+- Karmaşık gramer yapılarından kaçın
+Türkçe açıklama yaparken basit dil kullan ve öğrencinin seviyesine uygun örnekler ver.""",
+
+    "a2": """Sen bir İngilizce öğretmenisin ve A2 seviyesindeki öğrencilerle çalışıyorsun.
+A2 seviyesi için:
+- Temel gramer yapılarını kullan (Present Simple, Present Continuous, Past Simple)
+- Günlük rutinler, alışveriş, aile hakkında konuşmayı destekle
+- Basit bağlaçlar kullan (and, but, because)
+- Sık kullanılan kelimelerle cümleler kur
+- Açık ve yavaş bir şekilde açıkla
+- Modal fiiller (can, could, should) gibi temel yapıları tanıt
+Öğrencinin günlük yaşamından örnekler vererek öğrenmeyi kolaylaştır.""",
+
+    "b1": """Sen bir İngilizce öğretmenisin ve B1 seviyesindeki öğrencilerle çalışıyorsun.
+B1 seviyesi için:
+- Orta seviye gramer yapılarını kullan (Present Perfect, Future tenses, Conditionals)
+- Soyut konuları açıklayabilir
+- Bağlaçları çeşitlendir (although, however, therefore)
+- Görüş bildirme ve öneri verme ifadelerini kullan
+- Karmaşık metinleri anlamaya yardımcı ol
+- Passive voice gibi yapıları tanıt
+- İş, eğitim, seyahat gibi konularda yardım et
+Öğrencinin kendi fikirlerini İngilizce ifade etmesini teşvik et.""",
+
+    "b2": """Sen bir İngilizce öğretmenisin ve B2 seviyesindeki öğrencilerle çalışıyorsun.
+B2 seviyesi için:
+- Gelişmiş gramer yapılarını kullan (Past Perfect, Mixed Conditionals, Subjunctive)
+- Karmaşık metinleri ve soyut kavramları açıkla
+- İdiomatic ifadeler ve phrasal verb'ler kullan
+- Formal ve informal dil arasındaki farkları göster
+- Akademik ve profesyonel konularda destek ver
+- Eleştirel düşünceyi teşvik et
+- Nüanslı ifadeleri açıkla
+Öğrencinin akıcılığını artırmaya ve güvenini geliştirmeye odaklan.""",
+
+    "c1": """Sen bir İngilizce öğretmenisin ve C1 seviyesindeki öğrencilerle çalışıyorsun.
+C1 seviyesi için:
+- İleri seviye gramer yapılarını ustaca kullan
+- Karmaşık ve akademik konuları detaylı açıkla
+- Geniş kelime dağarcığı ve idiom kullan
+- Inversion, cleft sentences gibi yapıları kullan
+- Akademik yazım ve sunum becerilerinde destek ver
+- Kültürel referansları açıkla
+- İnce nüansları ve çok anlamlı ifadeleri göster
+- Professional English kullanımında rehberlik et
+Öğrencinin native speaker seviyesine yaklaşmasına yardım et.""",
+
+    "c2": """Sen bir İngilizce öğretmenisin ve C2 seviyesindeki öğrencilerle çalışıyorsun.
+C2 seviyesi için:
+- Native speaker seviyesinde dil kullan
+- En karmaşık gramer yapılarını ve stilistik özelliklerini göster
+- Akademik, sanatsal ve profesyonel konularda derinlemesine destek ver
+- Çok gelişmiş kelime dağarcığı ve sophisticated ifadeler kullan
+- Edebiyat, felsefe, bilim gibi üst düzey konularda tartışma
+- Regional dialects ve language varieties hakkında bilgi ver
+- Çeviri ve interpretation becerilerinde destek
+- Style, register ve tone konularında uzman rehberlik
+Öğrencinin dili mükemmel seviyede kullanmasına yardım et."""
+}
+
+def detect_english_level(prompt: str) -> str:
+    """Prompt'tan İngilizce seviyesini algılar"""
+    # "ingilizce seviyesi: c1" formatındaki metni arıyoruz
+    level_pattern = r"ingilizce seviyesi:\s*([a-c][1-2])"
+    match = re.search(level_pattern, prompt.lower())
+    
+    if match:
+        level = match.group(1).lower()
+        logger.info(f"[ENGLISH] Seviye algılandı: {level}")
+        return level
+    
+    # Varsayılan seviye
+    logger.warning("[ENGLISH] Seviye algılanamadı, varsayılan B1 kullanılıyor")
+    return "b1"
+
+def clean_prompt(prompt: str) -> str:
+    """Prompt'tan seviye bilgisini temizler"""
+    # "ingilizce seviyesi: c1" kısmını çıkar
+    level_pattern = r"ingilizce seviyesi:\s*[a-c][1-2]\.?\s*"
+    cleaned = re.sub(level_pattern, "", prompt, flags=re.IGNORECASE)
+    return cleaned.strip()
 
 @app.get("/health")
 async def health_check():
@@ -395,10 +487,159 @@ async def get_model_info():
         "configured_llm": MODEL_NAME
     }
 
+# ========================
+# İNGİLİZCE ÖĞRENME API'Sİ
+# ========================
+
+@app.get("/english/levels")
+async def get_english_levels():
+    """Desteklenen İngilizce seviyelerini döndürür"""
+    return {
+        "levels": {
+            "A1": "Başlangıç - Temel kelimeler ve basit cümleler",
+            "A2": "Temel - Günlük konular ve basit gramer",
+            "B1": "Orta - Karmaşık konular ve gelişmiş gramer",
+            "B2": "Üst-Orta - Soyut konular ve akademik dil",
+            "C1": "İleri - Profesyonel ve akademik İngilizce",
+            "C2": "Usta - Native speaker seviyesi"
+        },
+        "usage": "Prompt'unuzun başına 'ingilizce seviyesi: c1' şeklinde seviyenizi belirtin",
+        "workflow": "workflows/halillllibrahim58/eng-teach"
+    }
+
+@app.post("/english/generate", response_model=EnglishLearningResponse)
+async def generate_english_content(request: EnglishLearningRequest):
+    """İngilizce öğrenme içeriği üretir - seviyeye göre"""
+    try:
+        logger.info(f"[ENGLISH] Gelen request: '{request.prompt[:50]}...'")
+        
+        # Seviyeyi algıla
+        detected_level = detect_english_level(request.prompt)
+        
+        # Prompt'u temizle
+        clean_user_prompt = clean_prompt(request.prompt)
+        
+        # Uygun system prompt'u seç
+        system_prompt = LEVEL_SYSTEM_PROMPTS.get(detected_level, LEVEL_SYSTEM_PROMPTS["b1"])
+        
+        # Final prompt'u oluştur
+        final_prompt = f"{system_prompt}\n\nÖğrenci sorusu: {clean_user_prompt}"
+        
+        logger.info(f"[ENGLISH] Seviye: {detected_level.upper()}, Temizlenmiş prompt: {clean_user_prompt[:50]}...")
+        
+        # FAL client ile içerik üret
+        result = await fal_client.run_async(
+            "workflows/halillllibrahim58/eng-teach",
+            arguments={
+                "prompt": final_prompt,
+                "system_prompt": system_prompt,
+                "max_tokens": request.max_tokens,
+                "temperature": request.temperature
+            },
+        )
+        
+        generated_text = result.get("output", "İçerik üretilemedi.")
+        
+        return EnglishLearningResponse(
+            generated_text=generated_text,
+            detected_level=detected_level.upper(),
+            system_prompt_used=f"{detected_level.upper()} seviyesi için özelleştirilmiş prompt",
+            clean_prompt=clean_user_prompt
+        )
+        
+    except Exception as e:
+        logger.error(f"[ENGLISH ERROR] İçerik üretme hatası: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"İçerik üretme hatası: {str(e)}")
+
+@app.post("/english/stream")
+async def stream_english_content(request: EnglishLearningRequest):
+    """İngilizce öğrenme içeriği stream olarak üretir"""
+    
+    async def generate_stream():
+        try:
+            logger.info(f"[ENGLISH STREAM] Request başlatıldı: '{request.prompt[:50]}...'")
+            
+            # Seviyeyi algıla
+            detected_level = detect_english_level(request.prompt)
+            
+            # Prompt'u temizle
+            clean_user_prompt = clean_prompt(request.prompt)
+            
+            # Uygun system prompt'u seç
+            system_prompt = LEVEL_SYSTEM_PROMPTS.get(detected_level, LEVEL_SYSTEM_PROMPTS["b1"])
+            
+            # Final prompt'u oluştur
+            final_prompt = f"{system_prompt}\n\nÖğrenci sorusu: {clean_user_prompt}"
+            
+            logger.info(f"[ENGLISH STREAM] Seviye: {detected_level.upper()}")
+            
+            # Önce seviye bilgisini gönder
+            yield f"data: {{'type': 'level', 'level': '{detected_level.upper()}', 'clean_prompt': '{clean_user_prompt}'}}\n\n"
+            
+            # FAL client ile stream
+            stream = fal_client.stream_async(
+                "workflows/halillllibrahim58/eng-teach",
+                arguments={
+                    "prompt": final_prompt,
+                    "system_prompt": system_prompt,
+                    "max_tokens": request.max_tokens,
+                    "temperature": request.temperature
+                },
+            )
+            
+            # Stream eventlerini gönder
+            async for event in stream:
+                if hasattr(event, 'type') and event.type == 'text':
+                    yield f"data: {{'type': 'text', 'content': '{event.content}'}}\n\n"
+                else:
+                    # Event'i string'e çevir
+                    yield f"data: {str(event)}\n\n"
+                    
+        except Exception as e:
+            logger.error(f"[ENGLISH STREAM ERROR] {str(e)}")
+            traceback.print_exc()
+            yield f"data: {{'type': 'error', 'message': '{str(e)}'}}\n\n"
+    
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
+
+@app.get("/english/test-levels")
+async def test_level_detection():
+    """Seviye algılama fonksiyonunu test eder"""
+    test_prompts = [
+        "ingilizce seviyesi: a1. Merhaba nasılsın?",
+        "ingilizce seviyesi: b2. I want to improve my writing skills",
+        "ingilizce seviyesi: c1. Could you explain complex grammatical structures?",
+        "Hello, how are you today?",  # Seviye belirtilmemiş
+    ]
+    
+    results = []
+    for prompt in test_prompts:
+        level = detect_english_level(prompt)
+        cleaned = clean_prompt(prompt)
+        results.append({
+            "original_prompt": prompt,
+            "detected_level": level.upper(),
+            "cleaned_prompt": cleaned
+        })
+    
+    return {
+        "test_results": results,
+        "available_levels": list(LEVEL_SYSTEM_PROMPTS.keys()),
+        "default_level": "B1"
+    }
+
 
 if __name__ == "__main__":
     logger.info("=" * 60)
-    logger.info("Gelişmiş RAG Sistemi Başlatılıyor")
+    logger.info("TutorlyAI - RAG, Quiz & English Learning API Başlatılıyor")
     logger.info("=" * 60)
     
     # RAG sistemini başlat

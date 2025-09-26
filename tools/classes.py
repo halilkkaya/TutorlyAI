@@ -102,3 +102,26 @@ class QuizResponse(BaseModel):
     total_soru: int
     soru_tipi: str
     created_at: str
+
+
+# İngilizce öğrenme sistemi için modeller
+class EnglishLearningRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, description="Kullanıcının İngilizce sorusu/isteği")
+    max_tokens: Optional[int] = Field(default=1000, ge=50, le=4000, description="Maksimum token sayısı")
+    temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0, description="Yaratıcılık seviyesi")
+
+    @validator('prompt')
+    def validate_prompt(cls, v):
+        """Prompt'u temizle ve validate et"""
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                raise ValueError('Prompt boş olamaz')
+        return v
+
+
+class EnglishLearningResponse(BaseModel):
+    generated_text: str = Field(..., description="Üretilen İngilizce öğrenme içeriği")
+    detected_level: str = Field(..., description="Algılanan İngilizce seviyesi (A1, A2, B1, B2, C1, C2)")
+    system_prompt_used: str = Field(..., description="Kullanılan system prompt açıklaması")
+    clean_prompt: str = Field(..., description="Seviye bilgisi temizlenmiş prompt")

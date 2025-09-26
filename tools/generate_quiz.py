@@ -62,13 +62,14 @@ async def generate_quiz(request: QuizRequest) -> QuizResponse:
                 "model": MODEL_NAME,
                 "prompt": user_prompt,
                 "system_prompt": system_prompt,
-                "max_tokens": min(3000, request.soru_sayisi * 200),  # Soru sayısına göre token limiti
-                "temperature": 0.3,  # Tutarlı sonuçlar için düşük temperature
+                "max_tokens": min(3000, request.soru_sayisi * 400),  # Soru sayısına göre token limiti
+                "temperature": 1,  # Tutarlı sonuçlar için düşük temperature
             },
         )
         
         response_text = result.get("output", "[]").strip()
         logger.info(f"[QUIZ] Model yanıtı alındı: {len(response_text)} karakter")
+        logger.info(f"[QUIZ] Raw response: ...{response_text[:1000]}")  # Son 1000 karakteri log'la
         
         # 5. JSON parse et
         questions_data = _parse_quiz_response(response_text, request.soru_tipi)
@@ -126,11 +127,13 @@ def _parse_quiz_response(response_text: str, question_type: str) -> List[Dict[st
         
         # JSON parse et
         questions_data = json.loads(response_text)
+        logger.info(f"[QUIZ] Parse edilen soru sayısı: {len(questions_data) if isinstance(questions_data, list) else 1}")
         
         # List olup olmadığını kontrol et
         if not isinstance(questions_data, list):
             if isinstance(questions_data, dict):
                 questions_data = [questions_data]
+                logger.info("[QUIZ] Tek soru dict'i array'e çevrildi")
             else:
                 raise ValueError("Geçersiz JSON formatı")
         

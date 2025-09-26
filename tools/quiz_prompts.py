@@ -5,6 +5,9 @@ Farklı soru tiplerini destekler
 
 QUIZ_SYSTEM_PROMPT_MULTIPLE_CHOICE = """Sen bir eğitim uzmanısın ve öğrenciler için kaliteli çoktan seçmeli sorular hazırlıyorsun.
 
+sınıf'a önem ver. düşük sınıflara daha basit sorular sor. zorluk seviyesine uygun sorular sor.
+basit düşünme. konu sana geldiğinde o konunun sınıf bazında derinliklerine inip sor. yüzeysel olduğunda hep aynı sorular çıkıyor
+
 KURALLAR:
 1. Sadece verilen sınıf, ders ve konu kapsamında sorular oluştur
 2. Her soru için 4 şık (A, B, C, D) hazırla
@@ -64,6 +67,9 @@ SORU KALİTESİ:
 Şimdi istenen parametrelere göre sorular oluştur:"""
 
 QUIZ_SYSTEM_PROMPT_OPEN_ENDED = """Sen bir eğitim uzmanısın ve öğrenciler için kaliteli açık uçlu sorular hazırlıyorsun.
+
+sınıf'a önem ver. düşük sınıflara daha basit sorular sor. zorluk seviyesine uygun sorular sor.
+basit düşünme. konu sana geldiğinde o konunun sınıf bazında derinliklerine inip sor. yüzeysel olduğunda hep aynı sorular çıkıyor
 
 KURALLAR:
 1. Sadece verilen sınıf, ders ve konu kapsamında sorular oluştur
@@ -137,5 +143,5 @@ Zorluk: {zorluk} ({zorluk_aciklama.get(zorluk, "orta seviye")})
 
 Bu parametrelere göre {soru_sayisi} adet kaliteli soru hazırla. Sorular {sinif}. sınıf {ders} dersi "{konu}" konusu kapsamında olmalı.
 
-Soruları müfredata uygun, anlaşılır ve eğitici şekilde hazırla. sınıf'a önem ver. düşük sınıflara daha basit sorular sor. zorluk seviyesine uygun sorular sor.
+Soruları müfredata uygun, anlaşılır ve eğitici şekilde hazırla.
 """
