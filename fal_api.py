@@ -18,6 +18,7 @@ from tools.generate_stream import generate_stream
 from tools.generate_quiz import generate_quiz
 from tools.classes import TextGenerationRequest, QuizRequest, EnglishLearningRequest, EnglishLearningResponse, ImageGenerationRequest, ImageGenerationResponse
 from tools.initalize_rag_system import initialize_rag_system, should_load_books, load_books_async, search_books_enhanced
+from tools.resilience_utils import resilient_client, create_fallback_response, FALLBACK_RESPONSES, CircuitState
 
 # Ortam değişkenlerini yükle
 load_dotenv()
@@ -367,8 +368,11 @@ async def generate_rag_answer(request: TextGenerationRequest):
 
             CEVAP:"""
 
-        # 5. Modeli çağır ve cevap al
-        result = await fal_client.run_async(
+        # 5. Modeli çağır ve cevap al (resilience ile)
+        fallback_response = await create_fallback_response("text_generation",
+                                                          generated_text="Şu anda AI servisi kullanılamıyor. Lütfen daha sonra tekrar deneyin.")
+
+        result = await resilient_client.run_async_with_resilience(
             FAL_MODEL_GATEWAY,
             arguments={
                 "model": MODEL_NAME,
@@ -376,6 +380,8 @@ async def generate_rag_answer(request: TextGenerationRequest):
                 "max_tokens": 1500,
                 "temperature": 0.3,
             },
+            fallback_response=fallback_response,
+            operation_type="text_generation"
         )
         
         final_answer = result.get("output", "Cevap oluşturulamadı.")
@@ -528,8 +534,11 @@ async def generate_english_content(request: EnglishLearningRequest):
         
         logger.info(f"[ENGLISH] Seviye: {detected_level.upper()}, Temizlenmiş prompt: {clean_user_prompt[:50]}...")
         
-        # FAL client ile içerik üret
-        result = await fal_client.run_async(
+        # FAL client ile içerik üret (resilience ile)
+        fallback_response = await create_fallback_response("text_generation",
+                                                          output="İngilizce öğrenme servisi şu anda kullanılamıyor. Lütfen daha sonra tekrar deneyin.")
+
+        result = await resilient_client.run_async_with_resilience(
             "workflows/halillllibrahim58/eng-teach",
             arguments={
                 "prompt": final_prompt,
@@ -537,6 +546,8 @@ async def generate_english_content(request: EnglishLearningRequest):
                 "max_tokens": request.max_tokens,
                 "temperature": request.temperature
             },
+            fallback_response=fallback_response,
+            operation_type="english_learning"
         )
         
         generated_text = result.get("output", "İçerik üretilemedi.")
@@ -578,8 +589,8 @@ async def stream_english_content(request: EnglishLearningRequest):
             # Önce seviye bilgisini gönder
             yield f"data: {{'type': 'level', 'level': '{detected_level.upper()}', 'clean_prompt': '{clean_user_prompt}'}}\n\n"
             
-            # FAL client ile stream
-            stream = fal_client.stream_async(
+            # FAL client ile stream (resilience ile)
+            stream = resilient_client.stream_async_with_resilience(
                 "workflows/halillllibrahim58/eng-teach",
                 arguments={
                     "prompt": final_prompt,
@@ -587,6 +598,7 @@ async def stream_english_content(request: EnglishLearningRequest):
                     "max_tokens": request.max_tokens,
                     "temperature": request.temperature
                 },
+                operation_type="english_learning"
             )
             
             # Stream eventlerini gönder
@@ -648,14 +660,20 @@ async def generate_image(request: ImageGenerationRequest):
     try:
         logger.info(f"[IMAGE GENERATION] Gelen request: '{request.prompt[:50]}...'")
         
-        # Fal AI workflow ile görsel üret
-        result = await fal_client.run_async(
+        # Fal AI workflow ile görsel üret (resilience ile)
+        fallback_response = await create_fallback_response("image_generation",
+                                                          workflow_id=request.workflow_id,
+                                                          prompt=request.prompt)
+
+        result = await resilient_client.run_async_with_resilience(
             request.workflow_id,
             arguments={
                 "prompt": request.prompt,
                 "max_tokens": 10000,
                 "temperature": 0.7
             },
+            fallback_response=fallback_response,
+            operation_type="image_generation"
         )
         
         # Sonuçtan görsel URL'lerini al
@@ -731,14 +749,15 @@ async def stream_image_generation(request: ImageGenerationRequest):
             # Önce başlangıç bilgisini gönder
             yield f"data: {{'type': 'start', 'workflow_id': '{request.workflow_id}', 'prompt': '{request.prompt}'}}\n\n"
             
-            # Fal AI workflow ile stream
-            stream = fal_client.stream_async(
+            # Fal AI workflow ile stream (resilience ile)
+            stream = resilient_client.stream_async_with_resilience(
                 request.workflow_id,
                 arguments={
                     "prompt": request.prompt,
                     "max_tokens": request.max_tokens,
                     "temperature": request.temperature
                 },
+                operation_type="image_generation"
             )
             
             # Stream eventlerini gönder
@@ -783,6 +802,89 @@ async def image_generation_info():
         "model": "Fal AI Workflow",
         "version": "1.0.0"
     }
+
+# ========================
+# RESILIENCE & STATİSTİKLER
+# ========================
+
+@app.get("/resilience/stats")
+async def get_resilience_stats():
+    """Hata yönetimi ve resilience istatistikleri"""
+    try:
+        stats = resilient_client.get_stats()
+        return {
+            "service": "TutorlyAI Resilience System",
+            "version": "1.0.0",
+            "timestamp": datetime.now().isoformat(),
+            "resilience_stats": stats,
+            "health_status": "healthy" if stats["circuit_breaker"]["state"] == "closed" else "degraded",
+            "features": {
+                "circuit_breaker": True,
+                "retry_mechanism": True,
+                "rate_limiting": True,
+                "timeout_handling": True,
+                "fallback_responses": True
+            }
+        }
+    except Exception as e:
+        logger.error(f"[RESILIENCE STATS ERROR] {str(e)}")
+        return {
+            "service": "TutorlyAI Resilience System",
+            "version": "1.0.0",
+            "error": str(e),
+            "health_status": "error"
+        }
+
+@app.post("/resilience/reset")
+async def reset_circuit_breaker():
+    """Circuit breaker'ı sıfırla (Acil durum için)"""
+    try:
+        resilient_client.circuit_breaker.state = CircuitState.CLOSED
+        resilient_client.circuit_breaker.failure_count = 0
+        resilient_client.circuit_breaker.success_count = 0
+        resilient_client.circuit_breaker.last_failure_time = None
+
+        logger.info("[RESILIENCE] Circuit breaker manuel olarak sıfırlandı")
+
+        return {
+            "message": "Circuit breaker başarıyla sıfırlandı",
+            "new_state": "closed",
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"[RESILIENCE RESET ERROR] {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Circuit breaker sıfırlama hatası: {str(e)}")
+
+@app.get("/resilience/config")
+async def get_resilience_config():
+    """Mevcut resilience konfigürasyonunu döndürür"""
+    try:
+        config = resilient_client.config
+
+        return {
+            "timeout_seconds": config.timeout_seconds,
+            "retry_config": {
+                "max_attempts": config.retry_config.max_attempts,
+                "base_delay": config.retry_config.base_delay,
+                "max_delay": config.retry_config.max_delay,
+                "exponential_base": config.retry_config.exponential_base,
+                "jitter": config.retry_config.jitter
+            },
+            "circuit_breaker_config": {
+                "failure_threshold": config.circuit_breaker_config.failure_threshold,
+                "success_threshold": config.circuit_breaker_config.success_threshold,
+                "timeout_seconds": config.circuit_breaker_config.timeout_seconds,
+                "half_open_max_calls": config.circuit_breaker_config.half_open_max_calls
+            },
+            "rate_limit_config": {
+                "requests_per_minute": config.rate_limit_config.requests_per_minute,
+                "requests_per_hour": config.rate_limit_config.requests_per_hour
+            },
+            "enable_fallback": config.enable_fallback
+        }
+    except Exception as e:
+        logger.error(f"[RESILIENCE CONFIG ERROR] {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Konfigürasyon alma hatası: {str(e)}")
 
 
 if __name__ == "__main__":

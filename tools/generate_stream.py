@@ -5,6 +5,7 @@ import json
 import traceback
 from typing import AsyncGenerator
 from tools.initalize_rag_system import search_books_enhanced
+from tools.resilience_utils import resilient_client
 import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -88,8 +89,8 @@ Bu soruyla ilgili ders kitaplarında spesifik bilgi bulamadım, ama genel bilgil
         # 🚀 3. ADIM: Streaming başlat
         logger.info(f"[STREAM] LLM streaming başlatılıyor...")
         
-        # Fal.ai stream_async kullan
-        stream = fal_client.stream_async(
+        # Fal.ai stream_async kullan (resilience ile)
+        stream = resilient_client.stream_async_with_resilience(
             FAL_MODEL_GATEWAY,
             arguments={
                 "model": MODEL_NAME,
@@ -97,6 +98,7 @@ Bu soruyla ilgili ders kitaplarında spesifik bilgi bulamadım, ama genel bilgil
                 "max_tokens": request.max_tokens,
                 "temperature": request.temperature,
             },
+            operation_type="stream"
         )
 
         # İlk token geldiğinde generation başladığını bildir

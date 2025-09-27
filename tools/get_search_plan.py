@@ -4,6 +4,7 @@ import json
 import re
 from tools.system_prompt import QUERY_PLANNER_SYSTEM_PROMPT
 from tools.subject_normalizer import normalize_subject_name, validate_subject
+from tools.resilience_utils import resilient_client, create_fallback_response
 import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,7 +17,10 @@ async def get_search_plan(user_prompt: str) -> Dict[str, Any]:
     logger.info(f"[PLANNER] Sorgu analizi: '{user_prompt}'")
     
     try:
-        result = await fal_client.run_async(
+        # Fallback response for search plan
+        fallback_response = {"output": '{"query": "' + user_prompt + '", "filters": {}}'}
+
+        result = await resilient_client.run_async_with_resilience(
             FAL_MODEL_GATEWAY,
             arguments={
                 "model": MODEL_NAME,
@@ -25,6 +29,8 @@ async def get_search_plan(user_prompt: str) -> Dict[str, Any]:
                 "max_tokens": 150,
                 "temperature": 0.1,
             },
+            fallback_response=fallback_response,
+            operation_type="search_plan"
         )
         
         response_text = result.get("output", "{}").strip()

@@ -12,6 +12,7 @@ from typing import List, Dict, Any
 from tools.classes import QuizRequest, QuizResponse
 from tools.quiz_prompts import get_quiz_system_prompt, build_quiz_prompt
 from tools.subject_normalizer import normalize_subject_name, validate_subject
+from tools.resilience_utils import resilient_client, create_fallback_response, FALLBACK_RESPONSES
 import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -55,8 +56,11 @@ async def generate_quiz(request: QuizRequest) -> QuizResponse:
         
         logger.info(f"[QUIZ] Prompt hazırlandı - Sınıf: {request.sinif}, Ders: {normalized_subject}, Konu: {request.konu}")
         
-        # 4. Model'i çağır
-        result = await fal_client.run_async(
+        # 4. Model'i çağır (resilience ile)
+        fallback_response = FALLBACK_RESPONSES["quiz_generation"].copy()
+        fallback_response["fallback_quiz"]["sorular"][0]["soru"] = f"{normalized_subject} {request.konu} konusunda genel bir soru (Fallback)"
+
+        result = await resilient_client.run_async_with_resilience(
             FAL_MODEL_GATEWAY,
             arguments={
                 "model": MODEL_NAME,
@@ -65,6 +69,8 @@ async def generate_quiz(request: QuizRequest) -> QuizResponse:
                 "max_tokens": min(3000, request.soru_sayisi * 400),  # Soru sayısına göre token limiti
                 "temperature": 1,  # Tutarlı sonuçlar için düşük temperature
             },
+            fallback_response=fallback_response,
+            operation_type="quiz_generation"
         )
         
         response_text = result.get("output", "[]").strip()
