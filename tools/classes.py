@@ -125,3 +125,31 @@ class EnglishLearningResponse(BaseModel):
     detected_level: str = Field(..., description="Algılanan İngilizce seviyesi (A1, A2, B1, B2, C1, C2)")
     system_prompt_used: str = Field(..., description="Kullanılan system prompt açıklaması")
     clean_prompt: str = Field(..., description="Seviye bilgisi temizlenmiş prompt")
+
+
+# Görsel üretimi için modeller
+class ImageGenerationRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=1000, description="Görsel üretimi için prompt")
+    workflow_id: str = Field(default="workflows/halillllibrahim58/teach-img-model", description="Fal AI workflow ID")
+    max_tokens: Optional[int] = Field(default=1000, ge=50, le=4000, description="Maksimum token sayısı")
+    temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0, description="Yaratıcılık seviyesi")
+    
+    @validator('prompt')
+    def validate_prompt(cls, v):
+        """Prompt'u temizle ve validate et"""
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                raise ValueError('Prompt boş olamaz')
+        return v
+
+
+class ImageGenerationResponse(BaseModel):
+    success: bool = Field(..., description="İşlem başarı durumu")
+    image_url: Optional[str] = Field(None, description="Ana görselin URL'si (ilk görsel)")
+    workflow_id: str = Field(..., description="Kullanılan workflow ID")
+    prompt: str = Field(..., description="Kullanılan prompt")
+    error_message: Optional[str] = Field(None, description="Hata mesajı (varsa)")
+    generated_at: str = Field(..., description="Üretim zamanı")
+    all_images: Optional[List[str]] = Field(None, description="Tüm üretilen görsellerin URL'leri")
+    total_images: Optional[int] = Field(None, description="Toplam üretilen görsel sayısı")

@@ -7,6 +7,7 @@ import asyncio
 from dotenv import load_dotenv
 import traceback
 import fal_client
+from datetime import datetime
 import glob
 import re
 import logging
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 from tools.get_search_plan import get_search_plan
 from tools.generate_stream import generate_stream
 from tools.generate_quiz import generate_quiz
-from tools.classes import TextGenerationRequest, QuizRequest, EnglishLearningRequest, EnglishLearningResponse
+from tools.classes import TextGenerationRequest, QuizRequest, EnglishLearningRequest, EnglishLearningResponse, ImageGenerationRequest, ImageGenerationResponse
 from tools.initalize_rag_system import initialize_rag_system, should_load_books, load_books_async, search_books_enhanced
 
 # Ortam değişkenlerini yükle
@@ -634,6 +635,153 @@ async def test_level_detection():
         "test_results": results,
         "available_levels": list(LEVEL_SYSTEM_PROMPTS.keys()),
         "default_level": "B1"
+    }
+
+
+# ========================
+# GÖRSEL ÜRETİMİ API'Sİ
+# ========================
+
+@app.post("/generate/image", response_model=ImageGenerationResponse)
+async def generate_image(request: ImageGenerationRequest):
+    """Görsel üretimi endpoint'i - Fal AI workflow ile"""
+    try:
+        logger.info(f"[IMAGE GENERATION] Gelen request: '{request.prompt[:50]}...'")
+        
+        # Fal AI workflow ile görsel üret
+        result = await fal_client.run_async(
+            request.workflow_id,
+            arguments={
+                "prompt": request.prompt,
+                "max_tokens": 10000,
+                "temperature": 0.7
+            },
+        )
+        
+        # Sonuçtan görsel URL'lerini al
+        image_urls = []
+        if "images" in result and result["images"]:
+            # Birden fazla görsel varsa hepsini al
+            for img in result["images"]:
+                if isinstance(img, dict) and "url" in img:
+                    image_urls.append(img["url"])
+                elif isinstance(img, str):
+                    image_urls.append(img)
+        elif "image_url" in result:
+            image_urls.append(result["image_url"])
+        elif "output" in result and isinstance(result["output"], str) and result["output"].startswith("http"):
+            image_urls.append(result["output"])
+        
+        if not image_urls:
+            logger.warning("[IMAGE GENERATION] Hiç görsel URL'si bulunamadı")
+            return ImageGenerationResponse(
+                success=False,
+                image_url=None,
+                workflow_id=request.workflow_id,
+                prompt=request.prompt,
+                error_message="Görsel URL'si alınamadı",
+                generated_at=datetime.now().isoformat()
+            )
+        
+        # İlk görseli ana URL olarak kullan, diğerlerini metadata'da sakla
+        main_image_url = image_urls[0]
+        logger.info(f"[IMAGE GENERATION] {len(image_urls)} görsel başarıyla üretildi")
+
+        # Tüm görselleri logla
+        logger.info(f"[IMAGE GENERATION] Ana görsel: {main_image_url}")
+        if len(image_urls) > 1:
+            logger.info(f"[IMAGE GENERATION] Diğer görseller:")
+            for i, img_url in enumerate(image_urls[1:], 2):
+                logger.info(f"[IMAGE GENERATION]   {i}. {img_url}")
+        else:
+            logger.info(f"[IMAGE GENERATION] Tek görsel üretildi: {main_image_url}")
+        
+        return ImageGenerationResponse(
+            success=True,
+            image_url=main_image_url,
+            workflow_id=request.workflow_id,
+            prompt=request.prompt,
+            error_message=None,
+            generated_at=datetime.now().isoformat(),
+            all_images=image_urls,  # Tüm görselleri de döndür
+            total_images=len(image_urls)
+        )
+        
+    except Exception as e:
+        logger.error(f"[IMAGE GENERATION ERROR] Görsel üretme hatası: {str(e)}")
+        traceback.print_exc()
+        return ImageGenerationResponse(
+            success=False,
+            image_url=None,
+            workflow_id=request.workflow_id,
+            prompt=request.prompt,
+            error_message=str(e),
+            generated_at=datetime.now().isoformat()
+        )
+
+
+@app.post("/generate/image/stream")
+async def stream_image_generation(request: ImageGenerationRequest):
+    """Görsel üretimi stream endpoint'i"""
+    
+    async def generate_stream():
+        try:
+            logger.info(f"[IMAGE STREAM] Request başlatıldı: '{request.prompt[:50]}...'")
+            
+            # Önce başlangıç bilgisini gönder
+            yield f"data: {{'type': 'start', 'workflow_id': '{request.workflow_id}', 'prompt': '{request.prompt}'}}\n\n"
+            
+            # Fal AI workflow ile stream
+            stream = fal_client.stream_async(
+                request.workflow_id,
+                arguments={
+                    "prompt": request.prompt,
+                    "max_tokens": request.max_tokens,
+                    "temperature": request.temperature
+                },
+            )
+            
+            # Stream eventlerini gönder
+            async for event in stream:
+                if hasattr(event, 'type'):
+                    if event.type == 'text':
+                        yield f"data: {{'type': 'text', 'content': '{event.content}'}}\n\n"
+                    elif event.type == 'image':
+                        yield f"data: {{'type': 'image', 'url': '{event.url}'}}\n\n"
+                    else:
+                        yield f"data: {{'type': 'event', 'data': '{str(event)}'}}\n\n"
+                else:
+                    # Event'i string'e çevir
+                    yield f"data: {{'type': 'event', 'data': '{str(event)}'}}\n\n"
+                    
+        except Exception as e:
+            logger.error(f"[IMAGE STREAM ERROR] {str(e)}")
+            traceback.print_exc()
+            yield f"data: {{'type': 'error', 'message': '{str(e)}'}}\n\n"
+    
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
+
+
+@app.get("/generate/image/info")
+async def image_generation_info():
+    """Görsel üretimi sistemi hakkında bilgi"""
+    return {
+        "supported_workflows": [
+            "workflows/halillllibrahim58/teach-img-model"
+        ],
+        "default_workflow": "workflows/halillllibrahim58/teach-img-model",
+        "max_prompt_length": 1000,
+        "supported_formats": ["jpg", "png", "webp"],
+        "streaming_support": True,
+        "model": "Fal AI Workflow",
+        "version": "1.0.0"
     }
 
 
