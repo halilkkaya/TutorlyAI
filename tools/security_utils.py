@@ -53,7 +53,7 @@ SQL_INJECTION_PATTERNS = [
     r"(--|#|/\*|\*/)",
     r"(\bor\b\s+\d+\s*=\s*\d+)",
     r"(\band\b\s+\d+\s*=\s*\d+)",
-    r"('|\")(\s)*(or|and|union|select)",
+    r"('|\")(\s)*(or|and|union|select)(\s)+(\w+\s*=|\w+\s*\(|from\s+\w+|into\s+\w+|\d+)",  # More specific SQL context
     r"\b(script|javascript|vbscript|onload|onerror|onclick)\b",
     r"(\<\s*script)",
     r"(\bxp_cmdshell\b)"
@@ -152,6 +152,47 @@ class SecurityValidator:
         sanitized = self._html_escape(sanitized)
 
         logger.info(f"[SECURITY] Input sanitized: {field_name}")
+        return sanitized
+
+    def sanitize_ai_prompt(self, input_text: str, field_name: str = "ai_prompt") -> str:
+        """AI prompt'larını güvenli hale getirir (minimal güvenlik kontrolleri)"""
+        if not isinstance(input_text, str):
+            raise HTTPException(status_code=400, detail=f"Invalid input type for {field_name}")
+
+        # Boş veya None kontrolü
+        if not input_text or not input_text.strip():
+            return ""
+
+        # Uzunluk kontrolü
+        if len(input_text) > self.config.max_prompt_length:
+            raise HTTPException(status_code=400,
+                              detail=f"{field_name} too long (max {self.config.max_prompt_length} chars)")
+
+        # Tehlikeli karakterleri temizle
+        sanitized = input_text.strip()
+
+        # AI PROMPT'LARI İÇİN MINIMAL GÜVENLİK:
+        # - SQL Injection kontrolü YOK (veritabanı işlemi yok)
+        # - Command injection kontrolü YOK (sistem komut çalıştırma yok)
+        # - XSS kontrolü sadece çok tehlikeli script tag'leri için
+
+        # Sadece açık script tag'lerini kontrol et
+        if "<script" in sanitized.lower() or "javascript:" in sanitized.lower():
+            violation = SecurityViolation(
+                violation_type="script_injection",
+                details=f"Script tag detected in {field_name}",
+                client_ip="unknown",
+                timestamp=datetime.now(),
+                request_path="unknown",
+                severity="medium"
+            )
+            self.violations.append(violation)
+            logger.warning(f"[SECURITY] Script tag detected in {field_name}")
+            raise HTTPException(status_code=400, detail="Invalid input detected")
+
+        # HTML entity encoding YOK - AI model'e gönderilecek text
+
+        logger.info(f"[SECURITY] AI prompt sanitized (minimal): {field_name}")
         return sanitized
 
     def _check_sql_injection(self, text: str, field_name: str):

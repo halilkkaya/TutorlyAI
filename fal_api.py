@@ -634,8 +634,8 @@ async def generate_english_content(request: EnglishLearningRequest, api_key: str
     try:
         logger.info(f"[ENGLISH] Gelen request: '{request.prompt[:50]}...'")
         
-        # Input sanitization
-        sanitized_prompt = security_validator.sanitize_input(request.prompt, "english_prompt")
+        # Input sanitization (SQL injection kontrolü olmadan - AI prompt için)
+        sanitized_prompt = security_validator.sanitize_ai_prompt(request.prompt, "english_prompt")
 
         # Seviyeyi algıla
         detected_level = detect_english_level(sanitized_prompt)
@@ -688,12 +688,15 @@ async def stream_english_content(request: EnglishLearningRequest, api_key: str =
     async def generate_stream():
         try:
             logger.info(f"[ENGLISH STREAM] Request başlatıldı: '{request.prompt[:50]}...'")
-            
+
+            # Input sanitization (SQL injection kontrolü olmadan - AI prompt için)
+            sanitized_prompt = security_validator.sanitize_ai_prompt(request.prompt, "english_stream_prompt")
+
             # Seviyeyi algıla
-            detected_level = detect_english_level(request.prompt)
+            detected_level = detect_english_level(sanitized_prompt)
             
             # Prompt'u temizle
-            clean_user_prompt = clean_prompt(request.prompt)
+            clean_user_prompt = clean_prompt(sanitized_prompt)
             
             # Uygun system prompt'u seç
             system_prompt = LEVEL_SYSTEM_PROMPTS.get(detected_level, LEVEL_SYSTEM_PROMPTS["b1"])
@@ -861,8 +864,8 @@ async def stream_image_generation(request: ImageGenerationRequest, api_key: str 
     
     async def generate_stream():
         try:
-            # Input sanitization
-            sanitized_prompt = security_validator.sanitize_input(request.prompt, "image_stream_prompt")
+            # Input sanitization (SQL injection kontrolü olmadan - AI prompt için)
+            sanitized_prompt = security_validator.sanitize_ai_prompt(request.prompt, "image_stream_prompt")
             logger.info(f"[IMAGE STREAM] Request başlatıldı: '{sanitized_prompt[:50]}...'")
 
             # Önce başlangıç bilgisini gönder
