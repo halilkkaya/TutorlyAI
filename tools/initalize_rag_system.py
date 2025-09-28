@@ -5,6 +5,7 @@ import glob
 from pathlib import Path
 from tools.parse_filename import parse_filename_for_metadata
 from tools.hybrid_retriever import HybridRetriever
+from tools.security_utils import security_validator
 import re
 import traceback
 from langchain.schema import Document
@@ -134,13 +135,22 @@ async def load_books_async():
             try:
                 filename = Path(pdf_path).name
                 logger.info(f"[RAG] İşleniyor: {filename}")
-                
+
+                # Güvenlik kontrolü - dosya yolu ve içerik
+                try:
+                    security_validator.validate_file_path(pdf_path)
+                    security_validator.validate_file_content(pdf_path)
+                    logger.info(f"[SECURITY] File validated: {filename}")
+                except Exception as e:
+                    logger.error(f"[SECURITY] File validation failed for {filename}: {str(e)}")
+                    continue
+
                 # Metadata çıkar
                 metadata = parse_filename_for_metadata(filename)
                 if not metadata:
                     logger.warning(f"[RAG] UYARI: {filename} format uyumsuz, atlanıyor")
                     continue
-                
+
                 # PDF oku
                 reader = PdfReader(pdf_path)
                 full_text = ""
