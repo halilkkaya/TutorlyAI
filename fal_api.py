@@ -1350,6 +1350,27 @@ if __name__ == "__main__":
     memory_monitor.start_monitoring()
     logger.info("[✓] Memory monitoring başlatıldı")
 
+    # Redis cache sistemini başlat
+    try:
+        from tools.redis_cache_adapters import initialize_redis_caches, redis_response_cache, redis_query_cache
+        from tools.performance_utils import set_redis_cache
+        from tools.database_pool import set_redis_query_cache
+
+        import asyncio
+        redis_success = asyncio.run(initialize_redis_caches())
+
+        if redis_success:
+            # Cache instance'larını güncelle
+            set_redis_cache(redis_response_cache)
+            set_redis_query_cache(redis_query_cache)
+            logger.info("[✓] Redis cache sistemi başlatıldı")
+        else:
+            logger.warning("[!] Redis cache başlatılamadı, in-memory cache kullanılacak")
+
+    except Exception as e:
+        logger.warning(f"[!] Redis cache başlatma hatası: {str(e)}")
+        logger.warning("[!] In-memory cache kullanılacak")
+
     # RAG sistemini başlat
     if initialize_rag_system():
         logger.info("[✓] RAG sistemi başlatıldı")

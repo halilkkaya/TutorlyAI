@@ -1,6 +1,7 @@
 """
 Performance and Scalability Utils
 Concurrent request limiting, connection pooling, caching, memory monitoring
+Enhanced with Redis cache integration
 """
 
 import asyncio
@@ -410,13 +411,31 @@ cache_config = CacheConfig()
 
 request_limiter = ConcurrentRequestLimiter(concurrency_config)
 memory_monitor = MemoryMonitor(memory_config)
-response_cache = MemoryCache(cache_config)
+
+# Cache instance - will be set during initialization
+response_cache = MemoryCache(cache_config)  # Fallback to in-memory
+_redis_cache_available = False
+
+def set_redis_cache(redis_cache_instance):
+    """Redis cache instance'ını set et"""
+    global response_cache, _redis_cache_available
+    response_cache = redis_cache_instance
+    _redis_cache_available = True
+    logger.info("[PERFORMANCE] Redis cache enabled for response caching")
 
 def get_performance_stats() -> Dict[str, Any]:
     """Tüm performance istatistiklerini döndür"""
+    cache_stats = response_cache.get_stats()
+
+    # Redis cache kullanılıyorsa backend bilgisini ekle
+    if _redis_cache_available:
+        cache_stats["backend"] = "redis"
+    else:
+        cache_stats["backend"] = "memory"
+
     return {
         "concurrency": request_limiter.get_stats(),
         "memory": memory_monitor.get_stats(),
-        "cache": response_cache.get_stats(),
+        "cache": cache_stats,
         "timestamp": datetime.now().isoformat()
     }

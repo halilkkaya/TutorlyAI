@@ -347,12 +347,30 @@ database_config = DatabaseConfig()
 query_cache_config = QueryCacheConfig()
 
 db_pool = ChromaDBConnectionPool(database_config)
-query_cache = QueryCache(query_cache_config)
+
+# Query cache instance - will be set during initialization
+query_cache = QueryCache(query_cache_config)  # Fallback to in-memory
+_redis_query_cache_available = False
+
+def set_redis_query_cache(redis_query_cache_instance):
+    """Redis query cache instance'ını set et"""
+    global query_cache, _redis_query_cache_available
+    query_cache = redis_query_cache_instance
+    _redis_query_cache_available = True
+    logger.info("[DATABASE] Redis query cache enabled")
 
 def get_database_stats() -> Dict[str, Any]:
     """Database performance istatistikleri"""
+    query_stats = query_cache.get_stats()
+
+    # Redis cache kullanılıyorsa backend bilgisini ekle
+    if _redis_query_cache_available:
+        query_stats["backend"] = "redis"
+    else:
+        query_stats["backend"] = "memory"
+
     return {
         "connection_pool": db_pool.get_stats(),
-        "query_cache": query_cache.get_stats(),
+        "query_cache": query_stats,
         "timestamp": datetime.now().isoformat()
     }

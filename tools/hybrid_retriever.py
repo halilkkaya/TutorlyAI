@@ -2,6 +2,7 @@
 Hibrit RAG Arama Sistemi
 Semantic Search + BM25 Keyword Search + Metadata Filtering kombinasyonu
 Smart Cache sistemi ile BM25 Index Persistence desteği
+Enhanced with Redis cache integration
 """
 
 from typing import List, Dict, Any, Optional, Tuple
@@ -46,24 +47,29 @@ class HybridRetriever:
     """
     Hibrit arama sistemi - Semantic + Keyword + Metadata filtering
     Smart Cache sistemi ile BM25 Index Persistence desteği
+    Enhanced with Redis cache integration
     """
-    
-    def __init__(self, vectorstore, embedding_model):
+
+    def __init__(self, vectorstore, embedding_model, use_redis_cache=True):
         self.vectorstore = vectorstore
         self.embedding_model = embedding_model
         self.bm25_index = None
         self.documents = []
         self.turkish_stop_words = self._get_turkish_stop_words()
         self.is_indexed = False
-        
-        # Smart Cache sistemi
+
+        # Cache system selection
+        self.use_redis_cache = use_redis_cache
+        self.redis_cache = None
+
+        # File-based cache (fallback)
         self.storage_dir = Path("storage")
         self.storage_dir.mkdir(exist_ok=True)
         self.bm25_index_path = self.storage_dir / "bm25_index.pkl"
         self.index_meta_path = self.storage_dir / "index_meta.json"
         self.documents_cache_path = self.storage_dir / "documents_cache.pkl"
-        
-        # Auto-initialize cache system
+
+        # Initialize cache system
         self._initialize_cache_system()
         
     def _get_turkish_stop_words(self) -> set:
@@ -83,23 +89,44 @@ class HybridRetriever:
     # ===== SMART CACHE SYSTEM =====
     
     def _initialize_cache_system(self):
-        """Cache sistemini başlat - otomatik index yükleme/oluşturma"""
+        """Cache sistemini başlat - Redis ve file-based cache desteği"""
         try:
             logger.info("[CACHE] Smart cache sistemi başlatılıyor...")
-            
-            if self._is_cache_valid():
-                logger.info("[CACHE] Geçerli cache bulundu, yükleniyor...")
-                if self._load_cache():
-                    logger.info(f"[CACHE] ✓ Cache başarıyla yüklendi: {len(self.documents)} döküman")
-                    return
-                else:
-                    logger.info("[CACHE] Cache yükleme başarısız, yeni index oluşturuluyor...")
-            else:
-                logger.info("[CACHE] Cache geçersiz veya bulunamadı, yeni index oluşturuluyor...")
-            
-            # Cache yoksa veya geçersizse background'da oluştur
-            self._schedule_index_rebuild()
-            
+
+            # Redis cache'i dene
+            if self.use_redis_cache:
+                try:
+                    from .redis_cache_adapters import redis_bm25_cache
+                    self.redis_cache = redis_bm25_cache
+                    logger.info("[CACHE] Redis cache integration enabled")
+                except ImportError as e:
+                    logger.warning(f"[CACHE] Redis cache not available: {str(e)}")
+                    self.use_redis_cache = False
+
+            # Cache validation and loading
+            cache_loaded = False
+
+            # Redis cache'den yüklemeye çalış
+            if self.use_redis_cache and self.redis_cache:
+                if self._is_redis_cache_valid():
+                    logger.info("[CACHE] Geçerli Redis cache bulundu, yükleniyor...")
+                    if self._load_redis_cache():
+                        logger.info(f"[CACHE] ✓ Redis cache başarıyla yüklendi: {len(self.documents)} döküman")
+                        cache_loaded = True
+
+            # Redis başarısız olursa file-based cache dene
+            if not cache_loaded:
+                if self._is_cache_valid():
+                    logger.info("[CACHE] Geçerli file cache bulundu, yükleniyor...")
+                    if self._load_cache():
+                        logger.info(f"[CACHE] ✓ File cache başarıyla yüklendi: {len(self.documents)} döküman")
+                        cache_loaded = True
+
+            # Hiç cache bulunamadıysa yeni oluştur
+            if not cache_loaded:
+                logger.info("[CACHE] Cache bulunamadı, yeni index oluşturuluyor...")
+                self._schedule_index_rebuild()
+
         except Exception as e:
             logger.error(f"[CACHE ERROR] Cache sistemi başlatma hatası: {str(e)}")
             traceback.print_exc()
@@ -244,6 +271,103 @@ class HybridRetriever:
                     logger.info(f"[CACHE] Temizlendi: {file_path.name}")
         except Exception as e:
             logger.error(f"[CACHE] Temizleme hatası: {str(e)}")
+
+    # ===== REDIS CACHE METHODS =====
+
+    def _is_redis_cache_valid(self) -> bool:
+        """Redis cache'in geçerli olup olmadığını kontrol et"""
+        if not self.redis_cache:
+            return False
+
+        try:
+            import asyncio
+            current_signature = self._calculate_content_signature()
+
+            # Async function'ı sync olarak çalıştır
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(
+                    self.redis_cache.is_cache_valid(current_signature)
+                )
+            finally:
+                loop.close()
+
+        except Exception as e:
+            logger.error(f"[REDIS_CACHE] Validation error: {str(e)}")
+            return False
+
+    def _load_redis_cache(self) -> bool:
+        """Redis cache'den BM25 index ve dökümanları yükle"""
+        if not self.redis_cache:
+            return False
+
+        try:
+            import asyncio
+            logger.info("[REDIS_CACHE] Redis'den cache yükleniyor...")
+
+            # Async function'ı sync olarak çalıştır
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                result = loop.run_until_complete(self.redis_cache.load_bm25_index())
+            finally:
+                loop.close()
+
+            if result is not None:
+                self.bm25_index, self.documents, metadata = result
+                self.is_indexed = True
+
+                logger.info(f"[REDIS_CACHE] ✓ Redis cache yüklendi: {len(self.documents)} döküman, "
+                          f"Created: {metadata.get('created_at', 'N/A')}")
+                return True
+            else:
+                logger.info("[REDIS_CACHE] Redis cache bulunamadı")
+                return False
+
+        except Exception as e:
+            logger.error(f"[REDIS_CACHE] Load error: {str(e)}")
+            return False
+
+    def _save_redis_cache(self) -> bool:
+        """BM25 index ve dökümanları Redis cache'e kaydet"""
+        if not self.redis_cache:
+            return False
+
+        try:
+            import asyncio
+            logger.info("[REDIS_CACHE] Redis'e cache kaydediliyor...")
+
+            # Metadata oluştur
+            metadata = {
+                'created_at': datetime.now().isoformat(),
+                'updated_at': datetime.now().isoformat(),
+                'content_signature': self._calculate_content_signature(),
+                'document_count': len(self.documents),
+                'bm25_terms_count': len(self.bm25_index.doc_freqs) if self.bm25_index else 0,
+                'version': '1.0'
+            }
+
+            # Async function'ı sync olarak çalıştır
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                result = loop.run_until_complete(
+                    self.redis_cache.save_bm25_index(self.bm25_index, self.documents, metadata)
+                )
+            finally:
+                loop.close()
+
+            if result:
+                logger.info(f"[REDIS_CACHE] ✓ Redis cache kaydedildi: {len(self.documents)} döküman")
+            else:
+                logger.warning("[REDIS_CACHE] ⚠ Redis cache kaydetme başarısız")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"[REDIS_CACHE] Save error: {str(e)}")
+            return False
     
     def _schedule_index_rebuild(self):
         """Index yeniden oluşturmayı planla (şimdilik sync)"""
@@ -324,13 +448,28 @@ class HybridRetriever:
                 self.is_indexed = True
                 
                 logger.info(f"[HYBRID] ✓ BM25 index oluşturuldu: {len(self.documents)} döküman")
-                
-                # Cache'e kaydet
+
+                # Cache'e kaydet - önce Redis'e sonra file'a
+                cache_saved = False
+
+                # Redis cache'e kaydet
+                if self.use_redis_cache and self.redis_cache:
+                    if self._save_redis_cache():
+                        logger.info("[HYBRID] ✓ Index Redis cache'e kaydedildi")
+                        cache_saved = True
+                    else:
+                        logger.warning("[HYBRID] ⚠ Redis cache kaydetme başarısız")
+
+                # File cache'e kaydet (fallback)
                 if self._save_cache():
-                    logger.info("[HYBRID] ✓ Index cache'e kaydedildi")
+                    logger.info("[HYBRID] ✓ Index file cache'e kaydedildi")
+                    cache_saved = True
                 else:
-                    logger.warning("[HYBRID] ⚠ Cache kaydetme başarısız")
-                
+                    logger.warning("[HYBRID] ⚠ File cache kaydetme başarısız")
+
+                if not cache_saved:
+                    logger.warning("[HYBRID] ⚠ Hiçbir cache'e kaydetme başarısız")
+
                 return True
             else:
                 logger.warning("[HYBRID] İşlenecek metin bulunamadı")

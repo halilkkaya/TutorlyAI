@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  tutorlyai-redis:
+    build:
+      context: ./docker/redis
+      dockerfile: Dockerfile
+    container_name: tutorlyai-redis-cache
+    restart: unless-stopped
+    ports:
+      - "6380:6379"  # Farklı port kullan (6379 zaten başka projeler için kullanılıyor)
+    volumes:
+      - tutorlyai_redis_data:/data
+      - ./docker/redis/conf/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_APPENDONLY=yes
+      - REDIS_MAXMEMORY=512mb
+      - REDIS_MAXMEMORY_POLICY=allkeys-lru
+    command: redis-server /usr/local/etc/redis/redis.conf
+    networks:
+      - tutorlyai-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  tutorlyai_redis_data:
+    name: tutorlyai_redis_data
+    driver: local
+
+networks:
+  tutorlyai-network:
+    name: tutorlyai-network
+    driver: bridge
