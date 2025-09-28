@@ -497,17 +497,45 @@ async def stream_text(request: TextGenerationRequest, api_key: str = Depends(val
     )
 @app.post("/generate")
 async def generate_rag_answer(request: TextGenerationRequest, api_key: str = Depends(validate_api_key)):
-    """RAG ile cevap üretir - Score threshold ile"""
+    """RAG ile cevap üretir - Score threshold ile Redis cache desteği"""
     try:
         # Input sanitization (SQL/Command injection kontrolü olmadan - AI prompt için)
         sanitized_prompt = security_validator.sanitize_ai_prompt(request.prompt, "prompt")
         logger.info(f"[GENERATE] Gelen sorgu: '{sanitized_prompt[:50]}...'")
 
+        # Redis Response Cache kontrolü
+        try:
+            from tools.redis_cache_adapters import redis_response_cache
+            import hashlib
+            import json
+
+            # Response cache key oluştur
+            response_cache_data = {
+                "prompt": sanitized_prompt,
+                "search_k": request.search_k,
+                "score_threshold": request.score_threshold,
+                "use_hybrid": request.use_hybrid,
+                "semantic_weight": request.semantic_weight,
+                "keyword_weight": request.keyword_weight
+            }
+            response_cache_key = hashlib.md5(
+                json.dumps(response_cache_data, sort_keys=True).encode('utf-8')
+            ).hexdigest()
+
+            # Cache'den kontrol et
+            cached_response = await redis_response_cache.get_async("generate_response:" + response_cache_key)
+            if cached_response:
+                logger.info("[GENERATE] 🚀 RESPONSE CACHE HIT - Cached response döndürülüyor")
+                return cached_response
+
+        except Exception as cache_error:
+            logger.warning(f"[GENERATE] Response cache error: {str(cache_error)}")
+
         # 1. Arama planı oluştur
         search_plan = await get_search_plan(sanitized_prompt)
         query = search_plan.get("query", request.prompt)
         filters = search_plan.get("filters", {})
-        
+
         logger.info(f"[GENERATE] Arama planı - Query: '{query}', Filters: {filters}")
         
         # 2. Hibrit arama stratejisi ile doküman bulma (request parametrelerini kullan)
@@ -606,7 +634,8 @@ async def generate_rag_answer(request: TextGenerationRequest, api_key: str = Dep
                 ]
             }
 
-        return {
+        # Response objesi oluştur
+        response_data = {
             "generated_text": final_answer,
             "search_plan": search_plan,
             "found_documents": len(relevant_docs),
@@ -621,6 +650,16 @@ async def generate_rag_answer(request: TextGenerationRequest, api_key: str = Dep
             },
             "search_details": search_details
         }
+
+        # Response'u Redis cache'e kaydet
+        try:
+            from tools.redis_cache_adapters import redis_response_cache
+            await redis_response_cache.set_async("generate_response:" + response_cache_key, response_data)
+            logger.info("[GENERATE] ✅ Response cached successfully")
+        except Exception as cache_error:
+            logger.warning(f"[GENERATE] Response cache save error: {str(cache_error)}")
+
+        return response_data
         
     except Exception as e:
         logger.error(f"[GENERATE ERROR] {str(e)}")
@@ -1374,6 +1413,16 @@ if __name__ == "__main__":
     # RAG sistemini başlat
     if initialize_rag_system():
         logger.info("[✓] RAG sistemi başlatıldı")
+
+        # Global embedding model'i similarity cache'e inject et
+        try:
+            from tools.initalize_rag_system import embedding_model
+            from tools.similarity_cache import similarity_cache
+            if embedding_model:
+                similarity_cache.set_global_embedding_model(embedding_model)
+                logger.info("[✓] Embedding model injected to similarity cache")
+        except Exception as e:
+            logger.warning(f"[!] Embedding model injection failed: {str(e)}")
 
         # Kitapları yükle
         if should_load_books():

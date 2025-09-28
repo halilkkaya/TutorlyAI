@@ -238,10 +238,19 @@ class TutorlyAIRedisClient:
             ttl = ttl or self.get_ttl_for_cache_type(cache_type)
 
             # Serialize value
-            if isinstance(value, (dict, list)):
-                serialized_value = json.dumps(value).encode('utf-8')
-            else:
+            try:
+                # Önce JSON deneme (basic types için)
+                if isinstance(value, (dict, list, str, int, float, bool)) and not hasattr(value, '__dict__'):
+                    serialized_value = json.dumps(value).encode('utf-8')
+                    logger.debug(f"[REDIS] Using JSON serialization for {type(value).__name__}")
+                else:
+                    # Complex objects (Document, etc.) için pickle kullan
+                    serialized_value = pickle.dumps(value)
+                    logger.debug(f"[REDIS] Using pickle serialization for {type(value).__name__}")
+            except (TypeError, ValueError) as e:
+                # JSON serialize edilemezse pickle kullan
                 serialized_value = pickle.dumps(value)
+                logger.debug(f"[REDIS] JSON failed, using pickle for {type(value).__name__}: {str(e)}")
 
             result = client.setex(key, ttl, serialized_value)
             logger.debug(f"[REDIS] Cache set: {cache_type}:{key} (TTL: {ttl}s)")
@@ -293,10 +302,19 @@ class TutorlyAIRedisClient:
             ttl = ttl or self.get_ttl_for_cache_type(cache_type)
 
             # Serialize value
-            if isinstance(value, (dict, list)):
-                serialized_value = json.dumps(value).encode('utf-8')
-            else:
+            try:
+                # Önce JSON deneme (basic types için)
+                if isinstance(value, (dict, list, str, int, float, bool)) and not hasattr(value, '__dict__'):
+                    serialized_value = json.dumps(value).encode('utf-8')
+                    logger.debug(f"[REDIS] Using JSON serialization for {type(value).__name__}")
+                else:
+                    # Complex objects (Document, etc.) için pickle kullan
+                    serialized_value = pickle.dumps(value)
+                    logger.debug(f"[REDIS] Using pickle serialization for {type(value).__name__}")
+            except (TypeError, ValueError) as e:
+                # JSON serialize edilemezse pickle kullan
                 serialized_value = pickle.dumps(value)
+                logger.debug(f"[REDIS] JSON failed, using pickle for {type(value).__name__}: {str(e)}")
 
             result = await client.setex(key, ttl, serialized_value)
             logger.debug(f"[REDIS] Async cache set: {cache_type}:{key} (TTL: {ttl}s)")

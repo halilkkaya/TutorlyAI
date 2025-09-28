@@ -1,6 +1,7 @@
 """
 Redis Cache Adapters for TutorlyAI
 Adapts existing cache systems to use Redis as backend
+Enhanced with similarity-based cache matching
 """
 
 import asyncio
@@ -12,6 +13,7 @@ from datetime import datetime
 from dataclasses import dataclass
 
 from .redis_client import redis_client
+from .similarity_cache import similarity_cache
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +37,61 @@ class RedisMemoryCache:
             "memory_usage_mb": 0
         }
 
-    async def get(self, key: str) -> Optional[Any]:
-        """Cache'den değer al - Redis'den"""
+    def get(self, key: str) -> Optional[Any]:
+        """Cache'den değer al - Redis'den (sync wrapper)"""
+        try:
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                cache_key = redis_client.generate_cache_key(f"memory_cache", key)
+                result = loop.run_until_complete(
+                    redis_client.get_cache_async(self.cache_type, cache_key)
+                )
+
+                if result is not None:
+                    self.stats["hits"] += 1
+                    logger.debug(f"[REDIS_CACHE] Hit: {key}")
+                    return result
+                else:
+                    self.stats["misses"] += 1
+                    logger.debug(f"[REDIS_CACHE] Miss: {key}")
+                    return None
+            finally:
+                loop.close()
+
+        except Exception as e:
+            logger.error(f"[REDIS_CACHE] Get error: {str(e)}")
+            self.stats["misses"] += 1
+            return None
+
+    def set(self, key: str, value: Any, ttl_seconds: Optional[int] = None) -> bool:
+        """Cache'e değer ekle - Redis'e (sync wrapper)"""
+        try:
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                cache_key = redis_client.generate_cache_key(f"memory_cache", key)
+                ttl = ttl_seconds or redis_client.get_ttl_for_cache_type(self.cache_type)
+
+                result = loop.run_until_complete(
+                    redis_client.set_cache_async(self.cache_type, cache_key, value, ttl)
+                )
+
+                if result:
+                    logger.debug(f"[REDIS_CACHE] Set: {key} (TTL: {ttl}s)")
+
+                return result
+            finally:
+                loop.close()
+
+        except Exception as e:
+            logger.error(f"[REDIS_CACHE] Set error: {str(e)}")
+            return False
+
+    async def get_async(self, key: str) -> Optional[Any]:
+        """Cache'den değer al - Redis'den (async)"""
         try:
             cache_key = redis_client.generate_cache_key(f"memory_cache", key)
             result = await redis_client.get_cache_async(self.cache_type, cache_key)
@@ -55,8 +110,8 @@ class RedisMemoryCache:
             self.stats["misses"] += 1
             return None
 
-    async def set(self, key: str, value: Any, ttl_seconds: Optional[int] = None) -> bool:
-        """Cache'e değer ekle - Redis'e"""
+    async def set_async(self, key: str, value: Any, ttl_seconds: Optional[int] = None) -> bool:
+        """Cache'e değer ekle - Redis'e (async)"""
         try:
             cache_key = redis_client.generate_cache_key(f"memory_cache", key)
             ttl = ttl_seconds or redis_client.get_ttl_for_cache_type(self.cache_type)
@@ -146,21 +201,33 @@ class RedisQueryCache:
         }
 
     async def get_or_execute_query(self, cache_key: str, query_func, *args, **kwargs):
-        """Cache'den al veya query'yi çalıştır - Redis ile"""
+        """Cache'den al veya query'yi çalıştır - Redis ile similarity desteği"""
         async with self._lock:
             redis_key = redis_client.generate_cache_key("query_cache", cache_key)
 
-            # Cache hit kontrolü
-            cached_result = await redis_client.get_cache_async(self.cache_type, redis_key)
+            # Extract query and filters from args for similarity matching
+            query_text = None
+            filters = None
+            if args:
+                # İlk arg genelde query string'i
+                query_text = args[0] if isinstance(args[0], str) else None
+                # kwargs'ta filters olabilir
+                filters = kwargs.get('filters')
+
+            # Similarity-based cache hit kontrolü
+            cached_result = await similarity_cache.get_cached_result_with_similarity(
+                self.cache_type, redis_key, query_text, filters
+            )
+
             if cached_result is not None:
                 self.stats["cache_hits"] += 1
-                logger.info(f"[REDIS_QUERY] 🚀 CACHE HIT - Query cache'den alındı")
+                logger.info(f"[REDIS_QUERY] 🎯 CACHE HIT - Query: '{query_text[:50] if query_text else 'N/A'}...'")
                 return cached_result
 
             # Query deduplication
             if cache_key in self.pending_queries:
                 self.stats["deduplicated_queries"] += 1
-                logger.info(f"[REDIS_QUERY] 🔄 CACHE DEDUP - Aynı query bekletiliyor")
+                logger.info(f"[REDIS_QUERY] Query deduplication")
                 future = self.pending_queries[cache_key]
                 self._lock.release()
                 try:
@@ -170,7 +237,11 @@ class RedisQueryCache:
 
         # Cache miss - query'yi çalıştır
         self.stats["cache_misses"] += 1
-        logger.info(f"[REDIS_QUERY] 📡 CACHE MISS - Arama yapılıyor ve cache'lenecek")
+        logger.info(f"[REDIS_QUERY] 💾 CACHE MISS - Executing query: '{query_text[:50] if query_text else 'N/A'}...'")
+
+        # Cache miss durumunda da similarity analizi göster
+        if query_text:
+            logger.info(f"[REDIS_QUERY] New query will be cached for future similarity matching")
 
         # Query'yi pending olarak işaretle
         future = asyncio.Future()
@@ -180,12 +251,14 @@ class RedisQueryCache:
             # Query'yi çalıştır
             result = await query_func(*args, **kwargs)
 
-            # Redis'e cache'le
-            success = await redis_client.set_cache_async(self.cache_type, redis_key, result)
+            # Redis'e cache'le (similarity metadata ile)
+            success = await similarity_cache.set_cached_result_with_similarity(
+                self.cache_type, redis_key, result, query_text, filters
+            )
 
             if success:
                 self.stats["cached_queries"] += 1
-                logger.info(f"[REDIS_QUERY] ✅ Query result cached successfully")
+                logger.info(f"[REDIS_QUERY] Query result cached with similarity metadata")
 
             # Pending'den kaldır ve sonucu set et
             async with self._lock:

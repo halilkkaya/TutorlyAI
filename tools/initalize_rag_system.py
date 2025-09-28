@@ -413,7 +413,7 @@ async def search_books_enhanced_async(query: str, filters: Optional[Dict[str, An
                                     semantic_weight: float = 0.7,
                                     keyword_weight: float = 0.3) -> List[Document]:
     """
-    Async cache-enabled search function
+    Async cache-enabled search function with Redis similarity cache
     """
     import json
 
@@ -430,12 +430,22 @@ async def search_books_enhanced_async(query: str, filters: Optional[Dict[str, An
     cache_key = json.dumps(cache_data, sort_keys=True)
 
     try:
-        # Async cache kullan
-        return await query_cache.get_or_execute_query(
-            cache_key,
-            _search_books_enhanced_impl,
-            query, filters, k, score_threshold, use_hybrid, semantic_weight, keyword_weight
-        )
+        # Redis Query Cache kullan (similarity desteği ile)
+        try:
+            from tools.redis_cache_adapters import redis_query_cache
+            return await redis_query_cache.get_or_execute_query(
+                cache_key,
+                _search_books_enhanced_impl,
+                query, filters, k, score_threshold, use_hybrid, semantic_weight, keyword_weight
+            )
+        except ImportError:
+            logger.warning("[SEARCH] Redis cache not available, falling back to memory cache")
+            # Fallback to memory cache
+            return await query_cache.get_or_execute_query(
+                cache_key,
+                _search_books_enhanced_impl,
+                query, filters, k, score_threshold, use_hybrid, semantic_weight, keyword_weight
+            )
     except Exception as e:
         logger.error(f"[SEARCH CACHE ERROR] Cache execution failed: {str(e)}")
         # Cache başarısız olursa direct implementation'ı çağır
