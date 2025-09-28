@@ -6,6 +6,7 @@ from pathlib import Path
 from tools.parse_filename import parse_filename_for_metadata
 from tools.hybrid_retriever import HybridRetriever
 from tools.security_utils import security_validator
+from tools.database_pool import query_cache
 import re
 import traceback
 from langchain.schema import Document
@@ -221,11 +222,11 @@ async def load_books_async():
         return False
 
  
-def search_books_enhanced(query: str, filters: Optional[Dict[str, Any]] = None, 
-                          k: int = 5, score_threshold: float = 0.5,
-                          use_hybrid: bool = True,
-                          semantic_weight: float = 0.7,
-                          keyword_weight: float = 0.3) -> List[Document]:
+async def _search_books_enhanced_impl(query: str, filters: Optional[Dict[str, Any]] = None,
+                                     k: int = 5, score_threshold: float = 0.5,
+                                     use_hybrid: bool = True,
+                                     semantic_weight: float = 0.7,
+                                     keyword_weight: float = 0.3) -> List[Document]:
     """
     Gelişmiş kitap arama fonksiyonu - Hibrit arama (Semantic + BM25) ile
     
@@ -400,10 +401,71 @@ def search_books_enhanced(query: str, filters: Optional[Dict[str, Any]] = None,
             logger.info(f"[SEARCH] Hiç doküman threshold ({score_threshold}) değerini geçemedi, boş liste döndürülüyor")
         
         return final_docs
-        
+
     except Exception as e:
         logger.error(f"[SEARCH ERROR] Arama hatası: {str(e)}")
         traceback.print_exc()
+        return []
+
+async def search_books_enhanced_async(query: str, filters: Optional[Dict[str, Any]] = None,
+                                    k: int = 5, score_threshold: float = 0.5,
+                                    use_hybrid: bool = True,
+                                    semantic_weight: float = 0.7,
+                                    keyword_weight: float = 0.3) -> List[Document]:
+    """
+    Async cache-enabled search function
+    """
+    import json
+
+    # Cache key oluştur
+    cache_data = {
+        "query": query,
+        "filters": filters or {},
+        "k": k,
+        "score_threshold": score_threshold,
+        "use_hybrid": use_hybrid,
+        "semantic_weight": semantic_weight,
+        "keyword_weight": keyword_weight
+    }
+    cache_key = json.dumps(cache_data, sort_keys=True)
+
+    try:
+        # Async cache kullan
+        return await query_cache.get_or_execute_query(
+            cache_key,
+            _search_books_enhanced_impl,
+            query, filters, k, score_threshold, use_hybrid, semantic_weight, keyword_weight
+        )
+    except Exception as e:
+        logger.error(f"[SEARCH CACHE ERROR] Cache execution failed: {str(e)}")
+        # Cache başarısız olursa direct implementation'ı çağır
+        return await _search_books_enhanced_impl(
+            query, filters, k, score_threshold, use_hybrid, semantic_weight, keyword_weight
+        )
+
+def search_books_enhanced(query: str, filters: Optional[Dict[str, Any]] = None,
+                          k: int = 5, score_threshold: float = 0.5,
+                          use_hybrid: bool = True,
+                          semantic_weight: float = 0.7,
+                          keyword_weight: float = 0.3) -> List[Document]:
+    """
+    Sync wrapper - cache olmadan direct implementation
+    FastAPI event loop conflict'ini önlemek için cache devre dışı
+    """
+    import asyncio
+
+    # Direct implementation çağır (cache olmadan)
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(_search_books_enhanced_impl(
+                query, filters, k, score_threshold, use_hybrid, semantic_weight, keyword_weight
+            ))
+        finally:
+            loop.close()
+    except Exception as e:
+        logger.error(f"[SEARCH ERROR] Search execution failed: {str(e)}")
         return []
 
 

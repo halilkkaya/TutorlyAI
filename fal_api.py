@@ -19,12 +19,16 @@ from tools.get_search_plan import get_search_plan
 from tools.generate_stream import generate_stream
 from tools.generate_quiz import generate_quiz
 from tools.classes import TextGenerationRequest, QuizRequest, EnglishLearningRequest, EnglishLearningResponse, ImageGenerationRequest, ImageGenerationResponse
-from tools.initalize_rag_system import initialize_rag_system, should_load_books, load_books_async, search_books_enhanced
+from tools.initalize_rag_system import initialize_rag_system, should_load_books, load_books_async, search_books_enhanced, search_books_enhanced_async
 from tools.resilience_utils import resilient_client, create_fallback_response, FALLBACK_RESPONSES, CircuitState
 from tools.security_utils import (
     security_validator, api_key_manager, create_security_headers,
     get_client_ip, SecurityViolation
 )
+from tools.performance_utils import (
+    request_limiter, memory_monitor, response_cache, get_performance_stats
+)
+from tools.database_pool import get_database_stats
 
 # Ortam değişkenlerini yükle
 load_dotenv()
@@ -215,17 +219,83 @@ async def sanitize_request_data(request: Request):
         raise HTTPException(status_code=413, detail="Request too large")
 
 @app.middleware("http")
+async def android_compatibility_middleware(request: Request, call_next):
+    """Android uygulaması uyumluluğu için özel middleware"""
+    client_ip = get_client_ip(request)
+
+    # Android User-Agent kontrolü
+    user_agent = request.headers.get("User-Agent", "")
+    is_android = "android" in user_agent.lower() or "okhttp" in user_agent.lower()
+
+    # Android uygulamasından gelen istekler için özel handling
+    if is_android:
+        logger.info(f"[ANDROID] Request from Android app: {user_agent}")
+
+        # Android app'e özel header'lar ekle
+        response = await call_next(request)
+
+        # Android uyumlu response headers
+        response.headers["X-Android-Compatible"] = "true"
+        response.headers["X-API-Version"] = "2.2.0"
+
+        # CORS headers Android için optimize et
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-API-Key, X-User-ID"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+
+        return response
+    else:
+        return await call_next(request)
+
+@app.middleware("http")
+async def performance_middleware(request: Request, call_next):
+    """Performance and concurrency middleware"""
+    client_ip = get_client_ip(request)
+    request_id = f"{client_ip}_{int(time.time() * 1000)}"
+
+    # Android uygulamasından User ID'yi al
+    user_id = request.headers.get("X-User-ID", client_ip)
+
+    # Alternatif olarak query parameter'dan da al (Android'de header gönderme sorunu varsa)
+    if not user_id or user_id == client_ip:
+        user_id = request.query_params.get("user_id", client_ip)
+
+    start_time = time.time()
+
+    # Memory kontrolü
+    if not memory_monitor.check_memory_limits():
+        logger.error(f"[PERFORMANCE] Memory limit exceeded, rejecting request from {client_ip}")
+        raise HTTPException(status_code=503, detail="Server overloaded, please try again later")
+
+    # Concurrent request limiting
+    try:
+        async with request_limiter.limit_request(request_id, user_id):
+            response = await call_next(request)
+
+            # Performance headers ekle
+            process_time = time.time() - start_time
+            response.headers["X-Process-Time"] = str(process_time)
+            response.headers["X-Request-ID"] = request_id
+            response.headers["X-Concurrent-Requests"] = str(request_limiter.stats["concurrent_requests"])
+
+            return response
+
+    except HTTPException as e:
+        # Performance related HTTP exceptions
+        raise e
+    except Exception as e:
+        # Diğer hataları logla
+        logger.error(f"[PERFORMANCE] Unexpected error in request {request_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.middleware("http")
 async def security_middleware(request: Request, call_next):
     """Global security middleware"""
     client_ip = get_client_ip(request)
-    start_time = time.time()
 
     try:
         # Request data sanitization
         await sanitize_request_data(request)
-
-        # Rate limiting (basit implementation)
-        # Bu daha gelişmiş bir rate limiter ile değiştirilebilir
 
         response = await call_next(request)
 
@@ -233,10 +303,6 @@ async def security_middleware(request: Request, call_next):
         security_headers = create_security_headers()
         for key, value in security_headers.items():
             response.headers[key] = value
-
-        # Execution time log
-        process_time = time.time() - start_time
-        response.headers["X-Process-Time"] = str(process_time)
 
         return response
 
@@ -257,10 +323,32 @@ async def security_middleware(request: Request, call_next):
         security_validator.violations.append(violation)
         raise HTTPException(status_code=500, detail="Internal server error")
 
+@app.options("/{path:path}")
+async def handle_options(path: str):
+    """CORS preflight requests için OPTIONS handler - Android uyumluluğu"""
+    return {
+        "message": "CORS preflight OK",
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "headers": ["Content-Type", "Authorization", "X-API-Key", "X-User-ID"]
+    }
+
 @app.get("/health")
 async def health_check():
     """Sağlık kontrolü"""
-    return {"status": "healthy", "rag_active": vectorstore is not None}
+    performance_stats = get_performance_stats()
+
+    return {
+        "status": "healthy",
+        "rag_active": vectorstore is not None,
+        "timestamp": datetime.now().isoformat(),
+        "performance": {
+            "concurrent_requests": performance_stats["concurrency"]["concurrent_requests"],
+            "memory_usage_mb": performance_stats["memory"]["current_memory_mb"],
+            "cache_hit_rate": performance_stats["cache"]["hit_rate_percent"]
+        },
+        "android_compatible": True,
+        "api_version": "2.2.0"
+    }
 
 @app.post("/load-books")
 async def load_books_endpoint():
@@ -323,9 +411,9 @@ async def search_endpoint(request: dict):
     if not query:
         raise HTTPException(status_code=400, detail="Query gerekli")
     
-    results = search_books_enhanced(
-        query=query, 
-        filters=filters, 
+    results = await search_books_enhanced_async(
+        query=query,
+        filters=filters,
         k=k,
         score_threshold=score_threshold,
         use_hybrid=use_hybrid,
@@ -411,8 +499,8 @@ async def stream_text(request: TextGenerationRequest, api_key: str = Depends(val
 async def generate_rag_answer(request: TextGenerationRequest, api_key: str = Depends(validate_api_key)):
     """RAG ile cevap üretir - Score threshold ile"""
     try:
-        # Input sanitization
-        sanitized_prompt = security_validator.sanitize_input(request.prompt, "prompt")
+        # Input sanitization (SQL/Command injection kontrolü olmadan - AI prompt için)
+        sanitized_prompt = security_validator.sanitize_ai_prompt(request.prompt, "prompt")
         logger.info(f"[GENERATE] Gelen sorgu: '{sanitized_prompt[:50]}...'")
 
         # 1. Arama planı oluştur
@@ -423,10 +511,10 @@ async def generate_rag_answer(request: TextGenerationRequest, api_key: str = Dep
         logger.info(f"[GENERATE] Arama planı - Query: '{query}', Filters: {filters}")
         
         # 2. Hibrit arama stratejisi ile doküman bulma (request parametrelerini kullan)
-        relevant_docs = search_books_enhanced(
-            query=query, 
-            filters=filters, 
-            k=request.search_k, 
+        relevant_docs = await search_books_enhanced_async(
+            query=query,
+            filters=filters,
+            k=request.search_k,
             score_threshold=request.score_threshold,
             use_hybrid=request.use_hybrid,
             semantic_weight=request.semantic_weight,
@@ -1181,6 +1269,70 @@ async def get_security_config(admin_key: str = Depends(validate_api_key)):
         logger.error(f"[SECURITY] Config alma hatası: {str(e)}")
         raise HTTPException(status_code=500, detail="Güvenlik config alınamadı")
 
+# ========================
+# PERFORMANCE YÖNETİMİ API'Sİ
+# ========================
+
+@app.get("/performance/stats")
+async def get_performance_stats_endpoint():
+    """Performance istatistiklerini döndürür"""
+    try:
+        performance_stats = get_performance_stats()
+        database_stats = get_database_stats()
+
+        return {
+            "service": "TutorlyAI Performance Monitoring",
+            "version": "1.0.0",
+            "timestamp": datetime.now().isoformat(),
+            "performance": performance_stats,
+            "database": database_stats,
+            "health_status": "healthy"
+        }
+    except Exception as e:
+        logger.error(f"[PERFORMANCE] Stats alma hatası: {str(e)}")
+        return {
+            "service": "TutorlyAI Performance Monitoring",
+            "version": "1.0.0",
+            "error": str(e),
+            "health_status": "error"
+        }
+
+@app.get("/performance/memory")
+async def get_memory_stats():
+    """Memory kullanım istatistikleri"""
+    try:
+        memory_stats = memory_monitor.get_stats()
+
+        # Memory warning kontrolü
+        status = "healthy"
+        if memory_stats["current_memory_percent"] > 80:
+            status = "warning"
+        elif memory_stats["current_memory_percent"] > 90:
+            status = "critical"
+
+        return {
+            "memory_stats": memory_stats,
+            "status": status,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"[PERFORMANCE] Memory stats hatası: {str(e)}")
+        raise HTTPException(status_code=500, detail="Memory stats alınamadı")
+        
+@app.get("/performance/concurrency")
+async def get_concurrency_stats():
+    """Concurrent request istatistikleri"""
+    try:
+        concurrency_stats = request_limiter.get_stats()
+
+        return {
+            "concurrency_stats": concurrency_stats,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"[PERFORMANCE] Concurrency stats hatası: {str(e)}")
+        raise HTTPException(status_code=500, detail="Concurrency stats alınamadı")
+
 
 if __name__ == "__main__":
     logger.info("=" * 60)
@@ -1194,16 +1346,20 @@ if __name__ == "__main__":
     logger.info("[SECURITY] All security protections active")
     logger.info("=" * 60)
     
+    # Performance monitoring başlat
+    memory_monitor.start_monitoring()
+    logger.info("[✓] Memory monitoring başlatıldı")
+
     # RAG sistemini başlat
     if initialize_rag_system():
         logger.info("[✓] RAG sistemi başlatıldı")
-        
+
         # Kitapları yükle
         if should_load_books():
             logger.info("[INFO] Kitaplar yükleniyor...")
             import asyncio
             success = asyncio.run(load_books_async())
-            
+
             if success:
                 logger.info("[✓] Kitaplar başarıyla yüklendi")
             else:
