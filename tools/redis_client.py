@@ -37,7 +37,7 @@ class RedisConfig:
     # TTL settings (seconds)
     query_cache_ttl: int = 300  # 5 minutes
     performance_cache_ttl: int = 60  # 1 minute
-    bm25_cache_ttl: int = 300  # 5 minutes
+    bm25_cache_ttl: int = 3600  # 1 hour (BM25 index rarely changes)
     session_cache_ttl: int = 1800  # 30 minutes
 
     # Connection settings
@@ -85,7 +85,7 @@ class TutorlyAIRedisClient:
 
             query_cache_ttl=int(os.getenv("REDIS_QUERY_CACHE_TTL", "300")),
             performance_cache_ttl=int(os.getenv("REDIS_PERFORMANCE_CACHE_TTL", "60")),
-            bm25_cache_ttl=int(os.getenv("REDIS_BM25_CACHE_TTL", "300")),
+            bm25_cache_ttl=int(os.getenv("REDIS_BM25_CACHE_TTL", "3600")),
         )
 
     def initialize_sync_pools(self):

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SimilarityConfig:
     similarity_threshold: float = 0.80
-    max_similar_queries: int = 100  # Her database'de max kaç query saklanacak
+    max_similar_queries: int = 500  # Her database'de max kaç query saklanacak
     embedding_model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     enable_similarity_cache: bool = True
     final_response_cache_ttl: int = 900  # Final response cache TTL (saniye)

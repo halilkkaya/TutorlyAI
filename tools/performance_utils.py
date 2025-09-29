@@ -162,7 +162,9 @@ class MemoryMonitor:
         memory_info = process.memory_info()
         memory_percent = process.memory_percent()
 
-        current_mb = memory_info.rss / 1024 / 1024
+        # Negatif değer koruması
+        current_mb = max(0, memory_info.rss / 1024 / 1024)
+        memory_percent = max(0, memory_percent)
 
         # Stats güncelle
         self.stats["current_memory_mb"] = current_mb
@@ -174,9 +176,9 @@ class MemoryMonitor:
         return {
             "memory_mb": current_mb,
             "memory_percent": memory_percent,
-            "memory_rss": memory_info.rss,
-            "memory_vms": memory_info.vms,
-            "available_memory_mb": psutil.virtual_memory().available / 1024 / 1024
+            "memory_rss": max(0, memory_info.rss),
+            "memory_vms": max(0, memory_info.vms),
+            "available_memory_mb": max(0, psutil.virtual_memory().available / 1024 / 1024)
         }
 
     def check_memory_limits(self) -> bool:
