@@ -523,9 +523,9 @@ async def generate_rag_answer(request: TextGenerationRequest, api_key: str = Dep
         try:
             from tools.similarity_cache import similarity_cache
 
-            # Generated query üzerinden benzerlik kontrol et
+            # Generated query üzerinden benzerlik kontrol et (filters ile)
             cached_final_response = await similarity_cache.get_final_response_with_similarity(
-                query, search_config
+                query, search_config, filters
             )
 
             if cached_final_response:
@@ -604,7 +604,7 @@ async def generate_rag_answer(request: TextGenerationRequest, api_key: str = Dep
             arguments={
                 "model": MODEL_NAME,
                 "prompt": synthesis_prompt,
-                "max_tokens": 1500,
+                "max_tokens": 2500,
                 "temperature": 0.3,
             },
             fallback_response=fallback_response,
@@ -648,12 +648,12 @@ async def generate_rag_answer(request: TextGenerationRequest, api_key: str = Dep
             "search_details": search_details
         }
 
-        # Response'u query bazında similarity cache'e kaydet
+        # Response'u query bazında similarity cache'e kaydet (filters ile)
         try:
             from tools.similarity_cache import similarity_cache
             ttl_minutes = similarity_cache.config.final_response_cache_ttl // 60
             await similarity_cache.cache_final_response_with_similarity(
-                query, search_config, response_data  # TTL config'den alınacak
+                query, search_config, response_data, filters  # filters eklendi
             )
             logger.info(f"[GENERATE] ✅ Final response cached with query-based similarity metadata (TTL: {ttl_minutes}m)")
         except Exception as cache_error:

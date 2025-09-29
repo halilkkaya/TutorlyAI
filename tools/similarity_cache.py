@@ -282,7 +282,8 @@ class SimilarityBasedCache:
             logger.error(f"[SIMILARITY] Cache lookup error: {str(e)}")
             return None
 
-    async def get_final_response_with_similarity(self, query: str, search_config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def get_final_response_with_similarity(self, query: str, search_config: Dict[str, Any],
+                                                 filters: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """
         Final response için similarity-based cache lookup
         Benzerlik threshold'u geçen query'ler için direkt final response döndürür
@@ -305,6 +306,8 @@ class SimilarityBasedCache:
 
             # Search config'i normalize et (search_k, threshold vs. için)
             normalized_config = {k: v for k, v in sorted(search_config.items())}
+            # Filtreleri normalize et
+            normalized_filters = self._normalize_filters(filters)
 
             best_similarity = 0.0
             best_cache_key = None
@@ -315,6 +318,11 @@ class SimilarityBasedCache:
                     # Search config uyumluluğunu kontrol et
                     cached_config = metadata.get("search_config", {})
                     if cached_config != normalized_config:
+                        continue
+
+                    # ⚠️ FİLTRE KONTROLÜ - Sınıf, ders, konu eşleşmeli
+                    cached_filters = metadata.get("filters", {})
+                    if cached_filters != normalized_filters:
                         continue
 
                     # Embedding similarity hesapla
@@ -373,7 +381,8 @@ class SimilarityBasedCache:
             return None
 
     async def cache_final_response_with_similarity(self, query: str, search_config: Dict[str, Any],
-                                                  final_response: Dict[str, Any], ttl: Optional[int] = None) -> bool:
+                                                  final_response: Dict[str, Any], filters: Optional[Dict[str, Any]] = None,
+                                                  ttl: Optional[int] = None) -> bool:
         """
         Final response'u similarity metadata ile cache'e kaydet
         """
@@ -393,8 +402,8 @@ class SimilarityBasedCache:
                 # Query embedding hesapla
                 embedding = self._get_query_embedding(query)
                 if embedding is not None:
-                    # Final response metadata'sını kaydet
-                    await self._store_final_response_metadata(query, search_config, cache_key, embedding, ttl)
+                    # Final response metadata'sını kaydet (filters ile)
+                    await self._store_final_response_metadata(query, search_config, cache_key, embedding, ttl, filters)
 
             return result
 
@@ -403,7 +412,8 @@ class SimilarityBasedCache:
             return False
 
     async def _store_final_response_metadata(self, query: str, search_config: Dict[str, Any],
-                                           cache_key: str, embedding: np.ndarray, ttl: int):
+                                           cache_key: str, embedding: np.ndarray, ttl: int,
+                                           filters: Optional[Dict[str, Any]] = None):
         """Final response metadata'sını Redis'e sakla"""
         try:
             metadata_key = f"tutorlyai:similarity:final_response:metadata"
@@ -411,6 +421,7 @@ class SimilarityBasedCache:
             query_metadata = {
                 "query": self._normalize_query(query),
                 "search_config": {k: v for k, v in sorted(search_config.items())},  # Normalize et
+                "filters": self._normalize_filters(filters),  # Filtreleri ekle
                 "cache_key": cache_key,
                 "embedding": embedding.tolist(),
                 "timestamp": asyncio.get_event_loop().time()
