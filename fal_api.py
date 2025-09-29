@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 from tools.get_search_plan import get_search_plan
 from tools.generate_stream import generate_stream
 from tools.generate_quiz import generate_quiz
-from tools.classes import TextGenerationRequest, QuizRequest, EnglishLearningRequest, EnglishLearningResponse, ImageGenerationRequest, ImageGenerationResponse
+from tools.classes import TextGenerationRequest, QuizRequest, EnglishLearningRequest, EnglishLearningResponse, ImageGenerationRequest, ImageGenerationResponse, LessonPlanRequest, LessonPlanResponse
 from tools.initalize_rag_system import initialize_rag_system, should_load_books, load_books_async, search_books_enhanced, search_books_enhanced_async
 from tools.resilience_utils import resilient_client, create_fallback_response, FALLBACK_RESPONSES, CircuitState
 from tools.security_utils import (
@@ -879,7 +879,7 @@ async def test_level_detection():
         "ingilizce seviyesi: c1. Could you explain complex grammatical structures?",
         "Hello, how are you today?",  # Seviye belirtilmemiş
     ]
-    
+
     results = []
     for prompt in test_prompts:
         level = detect_english_level(prompt)
@@ -889,12 +889,92 @@ async def test_level_detection():
             "detected_level": level.upper(),
             "cleaned_prompt": cleaned
         })
-    
+
     return {
         "test_results": results,
         "available_levels": list(LEVEL_SYSTEM_PROMPTS.keys()),
         "default_level": "B1"
     }
+
+
+# ========================
+# DERS PLANI SİSTEMİ API'Sİ
+# ========================
+
+@app.post("/lesson-plan/generate", response_model=LessonPlanResponse)
+async def generate_lesson_plan(request: LessonPlanRequest, api_key: str = Depends(validate_api_key)):
+    """Ders planı oluşturur - Fal AI workflow ile"""
+    try:
+        logger.info(f"[LESSON PLAN] Gelen request: '{request.prompt[:50]}...'")
+
+        # Input sanitization
+        sanitized_prompt = security_validator.sanitize_ai_prompt(request.prompt, "lesson_plan_prompt")
+
+        # Workflow'a sadece prompt'u gönder
+        result = await resilient_client.run_async_with_resilience(
+            "workflows/halillllibrahim58/ders-plani",
+            arguments={"prompt": sanitized_prompt},
+            fallback_response=await create_fallback_response("text_generation", generated_text="Ders planı servisi şu anda kullanılamıyor."),
+            operation_type="lesson_plan_generation"
+        )
+
+        # Sonuçtan ders planı içeriğini al
+        lesson_plan_content = result.get("output", "")
+
+        return LessonPlanResponse(
+            success=True,
+            lesson_plan=lesson_plan_content
+        )
+
+    except Exception as e:
+        logger.error(f"[LESSON PLAN ERROR] {str(e)}")
+        return LessonPlanResponse(
+            success=False,
+            lesson_plan="",
+            error_message=str(e)
+        )
+
+
+@app.post("/lesson-plan/stream")
+async def stream_lesson_plan_generation(request: LessonPlanRequest, api_key: str = Depends(validate_api_key)):
+    """Ders planı oluşturma - Streaming endpoint"""
+
+    async def generate_stream():
+        try:
+            logger.info(f"[LESSON PLAN STREAM] Request başlatıldı: '{request.prompt[:50]}...'")
+
+            # Input sanitization
+            sanitized_prompt = security_validator.sanitize_ai_prompt(request.prompt, "lesson_plan_stream_prompt")
+
+            # Önce başlangıç bilgisini gönder
+            yield f"data: {{'type': 'start'}}\n\n"
+
+            # Fal AI workflow ile stream (sadece prompt ile)
+            stream = resilient_client.stream_async_with_resilience(
+                "workflows/halillllibrahim58/ders-plani",
+                arguments={"prompt": sanitized_prompt},
+                operation_type="lesson_plan_generation"
+            )
+
+            # Stream eventlerini gönder
+            async for event in stream:
+                if hasattr(event, 'type') and event.type == 'text':
+                    yield f"data: {{'type': 'text', 'content': '{event.content}'}}\n\n"
+                else:
+                    yield f"data: {{'type': 'event', 'data': '{str(event)}'}}\n\n"
+
+        except Exception as e:
+            logger.error(f"[LESSON PLAN STREAM ERROR] {str(e)}")
+            yield f"data: {{'type': 'error', 'message': '{str(e)}'}}\n\n"
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
 
 
 # ========================
@@ -1050,6 +1130,53 @@ async def image_generation_info():
         "streaming_support": True,
         "model": "Fal AI Workflow",
         "version": "1.0.0"
+    }
+
+@app.get("/lesson-plan/info")
+async def lesson_plan_info():
+    """Ders planı sistemi hakkında bilgi"""
+    return {
+        "supported_workflows": [
+            "workflows/halillllibrahim58/ders-plani"
+        ],
+        "default_workflow": "workflows/halillllibrahim58/ders-plani",
+        "supported_parameters": {
+            "prompt": "Ders planı için konu/ders açıklaması (gerekli)"
+        },
+        "max_prompt_length": 2000,
+        "supported_endpoints": [
+            "/lesson-plan/generate",
+            "/lesson-plan/stream"
+        ],
+        "streaming_support": True,
+        "model": "Fal AI Workflow",
+        "version": "1.0.0",
+        "request_format": {
+            "prompt": "string (gerekli)"
+        },
+        "response_format": {
+            "success": "boolean",
+            "lesson_plan": "string",
+            "error_message": "string (opsiyonel)"
+        }
+    }
+
+@app.get("/lesson-plan/example")
+async def lesson_plan_example():
+    """Ders planı kullanım örneği"""
+    return {
+        "message": "Ders planı oluşturmak için POST /lesson-plan/generate endpoint'ini kullanın",
+        "example_request": {
+            "prompt": "5. sınıf matematik dersi için üslü sayılar konusunda 45 dakikalık ders planı hazırla"
+        },
+        "example_response": {
+            "success": True,
+            "lesson_plan": "Ders planı içeriği burada olacak..."
+        },
+        "curl_example": """curl -X POST "http://localhost:8000/lesson-plan/generate" \\
+  -H "Content-Type: application/json" \\
+  -H "X-API-Key: YOUR_API_KEY" \\
+  -d '{"prompt": "5. sınıf matematik dersi için üslü sayılar konusunda ders planı hazırla"}'"""
     }
 
 # ========================

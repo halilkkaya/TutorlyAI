@@ -153,3 +153,23 @@ class ImageGenerationResponse(BaseModel):
     generated_at: str = Field(..., description="Üretim zamanı")
     all_images: Optional[List[str]] = Field(None, description="Tüm üretilen görsellerin URL'leri")
     total_images: Optional[int] = Field(None, description="Toplam üretilen görsel sayısı")
+
+
+# Ders planı sistemi için modeller
+class LessonPlanRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, description="Ders planı için konu/ders açıklaması")
+
+    @validator('prompt')
+    def validate_prompt(cls, v):
+        """Prompt'u temizle ve validate et"""
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                raise ValueError('Prompt boş olamaz')
+        return v
+
+
+class LessonPlanResponse(BaseModel):
+    success: bool = Field(..., description="İşlem başarı durumu")
+    lesson_plan: str = Field(..., description="Üretilen ders planı içeriği")
+    error_message: Optional[str] = Field(None, description="Hata mesajı (varsa)")
