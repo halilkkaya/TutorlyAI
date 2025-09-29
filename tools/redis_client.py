@@ -37,7 +37,7 @@ class RedisConfig:
     # TTL settings (seconds)
     query_cache_ttl: int = 300  # 5 minutes
     performance_cache_ttl: int = 60  # 1 minute
-    bm25_cache_ttl: int = 3600  # 1 hour
+    bm25_cache_ttl: int = 300  # 5 minutes
     session_cache_ttl: int = 1800  # 30 minutes
 
     # Connection settings
@@ -85,7 +85,7 @@ class TutorlyAIRedisClient:
 
             query_cache_ttl=int(os.getenv("REDIS_QUERY_CACHE_TTL", "300")),
             performance_cache_ttl=int(os.getenv("REDIS_PERFORMANCE_CACHE_TTL", "60")),
-            bm25_cache_ttl=int(os.getenv("REDIS_BM25_CACHE_TTL", "3600")),
+            bm25_cache_ttl=int(os.getenv("REDIS_BM25_CACHE_TTL", "300")),
         )
 
     def initialize_sync_pools(self):
@@ -356,6 +356,28 @@ class TutorlyAIRedisClient:
         except Exception as e:
             logger.error(f"[REDIS] Async cache delete error: {str(e)}")
             return False
+
+    async def get_ttl_async(self, cache_type: str, key: str) -> Optional[int]:
+        """Async TTL get"""
+        try:
+            client = self.get_async_client(cache_type)
+            ttl = await client.ttl(key)
+
+            # Redis TTL returns:
+            # -2: key doesn't exist
+            # -1: key exists but no expiry set
+            # >0: remaining seconds
+
+            if ttl == -2:
+                return None  # Key doesn't exist
+            elif ttl == -1:
+                return 0     # No expiry (permanent)
+            else:
+                return ttl   # Remaining seconds
+
+        except Exception as e:
+            logger.error(f"[REDIS] TTL get error: {str(e)}")
+            return None
 
     # ========== HEALTH CHECK ==========
 

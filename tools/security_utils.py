@@ -192,7 +192,7 @@ class SecurityValidator:
 
         # HTML entity encoding YOK - AI model'e gönderilecek text
 
-        logger.info(f"[SECURITY] AI prompt sanitized (minimal): {field_name}")
+        logger.debug(f"[SECURITY] AI prompt sanitized (minimal): {field_name}")
         return sanitized
 
     def _check_sql_injection(self, text: str, field_name: str):

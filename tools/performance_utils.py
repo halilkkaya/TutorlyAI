@@ -83,7 +83,7 @@ class ConcurrentRequestLimiter:
                         self.active_requests[user_id].add(request_id)
                         self.request_start_times[request_id] = datetime.now()
 
-                    logger.info(f"[PERFORMANCE] Request {request_id} started for user {user_id}")
+                    logger.debug(f"[PERFORMANCE] Request {request_id} started for user {user_id}")
                     try:
                         yield
                     finally:
@@ -97,7 +97,7 @@ class ConcurrentRequestLimiter:
                                     self.stats["timeout_requests"] += 1
                                 del self.request_start_times[request_id]
 
-                        logger.info(f"[PERFORMANCE] Request {request_id} completed for user {user_id}")
+                        logger.debug(f"[PERFORMANCE] Request {request_id} completed for user {user_id}")
 
         except asyncio.TimeoutError:
             self.stats["timeout_requests"] += 1

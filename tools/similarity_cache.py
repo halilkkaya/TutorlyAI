@@ -26,6 +26,7 @@ class SimilarityConfig:
     max_similar_queries: int = 100  # Her database'de max kaç query saklanacak
     embedding_model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     enable_similarity_cache: bool = True
+    final_response_cache_ttl: int = 900  # Final response cache TTL (saniye)
 
 class SimilarityBasedCache:
     """
@@ -44,7 +45,8 @@ class SimilarityBasedCache:
         return SimilarityConfig(
             similarity_threshold=float(os.getenv("REDIS_SIMILARITY_THRESHOLD", "0.80")),
             max_similar_queries=int(os.getenv("REDIS_MAX_SIMILAR_QUERIES", "100")),
-            enable_similarity_cache=os.getenv("REDIS_ENABLE_SIMILARITY_CACHE", "true").lower() == "true"
+            enable_similarity_cache=os.getenv("REDIS_ENABLE_SIMILARITY_CACHE", "true").lower() == "true",
+            final_response_cache_ttl=int(os.getenv("REDIS_FINAL_RESPONSE_TTL", "900"))  # Default 15 dakika
         )
 
     def set_global_embedding_model(self, embedding_model):
@@ -236,27 +238,13 @@ class SimilarityBasedCache:
                     logger.warning(f"[SIMILARITY] Error processing metadata: {str(e)}")
                     continue
 
-            # Detaylı similarity logları
-            if all_similarities:
-                # En yüksek similarity'yi bul
-                max_similarity = max(all_similarities, key=lambda x: x["similarity"])
-
-                logger.info(f"[SIMILARITY] Query: '{self._normalize_query(query)[:50]}...'")
-                logger.info(f"[SIMILARITY] Threshold: {self.config.similarity_threshold:.2f}")
-                logger.info(f"[SIMILARITY] Max similarity found: {max_similarity['similarity']:.4f} -> '{max_similarity['cached_query']}'")
-
-                # Top 3 similarity skorlarını göster
-                sorted_similarities = sorted(all_similarities, key=lambda x: x["similarity"], reverse=True)[:3]
-                for i, sim_data in enumerate(sorted_similarities):
-                    status = "✓ HIT" if sim_data["above_threshold"] else "✗ MISS"
-                    logger.info(f"[SIMILARITY] #{i+1}: {sim_data['similarity']:.4f} {status} -> '{sim_data['cached_query']}'")
-
+            # Similarity sonucu logla
             if best_cache_key:
-                logger.info(f"[SIMILARITY] ✅ Cache hit with similarity: {best_similarity:.4f} (threshold: {self.config.similarity_threshold:.2f})")
+                logger.info(f"[SIMILARITY] ✅ Cache hit: {best_similarity:.4f}")
                 return best_cache_key
             else:
-                max_sim = max_similarity["similarity"] if all_similarities else 0.0
-                logger.info(f"[SIMILARITY] ❌ No cache hit - max similarity: {max_sim:.4f} (threshold: {self.config.similarity_threshold:.2f})")
+                max_sim = max(all_similarities, key=lambda x: x["similarity"])["similarity"] if all_similarities else 0.0
+                logger.debug(f"[SIMILARITY] Cache miss - max: {max_sim:.4f}")
 
             return None
 
@@ -293,6 +281,163 @@ class SimilarityBasedCache:
         except Exception as e:
             logger.error(f"[SIMILARITY] Cache lookup error: {str(e)}")
             return None
+
+    async def get_final_response_with_similarity(self, query: str, search_config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Final response için similarity-based cache lookup
+        Benzerlik threshold'u geçen query'ler için direkt final response döndürür
+        """
+        if not self.config.enable_similarity_cache:
+            return None
+
+        try:
+            # Query embedding'i hesapla
+            query_embedding = self._get_query_embedding(query)
+            if query_embedding is None:
+                return None
+
+            # Final response metadata'larını al
+            metadata_key = f"tutorlyai:similarity:final_response:metadata"
+            existing_metadata = await redis_client.get_cache_async("session", metadata_key)
+
+            if not existing_metadata or not isinstance(existing_metadata, list):
+                return None
+
+            # Search config'i normalize et (search_k, threshold vs. için)
+            normalized_config = {k: v for k, v in sorted(search_config.items())}
+
+            best_similarity = 0.0
+            best_cache_key = None
+            all_similarities = []
+
+            for metadata in existing_metadata:
+                try:
+                    # Search config uyumluluğunu kontrol et
+                    cached_config = metadata.get("search_config", {})
+                    if cached_config != normalized_config:
+                        continue
+
+                    # Embedding similarity hesapla
+                    cached_embedding = metadata.get("embedding")
+                    if cached_embedding is None:
+                        continue
+
+                    cached_embedding_array = np.array(cached_embedding).reshape(1, -1)
+                    query_embedding_array = query_embedding.reshape(1, -1)
+
+                    similarity = cosine_similarity(query_embedding_array, cached_embedding_array)[0][0]
+
+                    # Similarity skorunu kaydet (debugging için)
+                    cached_query = metadata.get("query", "unknown")
+                    all_similarities.append({
+                        "cached_query": cached_query[:50] + "..." if len(cached_query) > 50 else cached_query,
+                        "similarity": similarity,
+                        "above_threshold": similarity >= self.config.similarity_threshold
+                    })
+
+                    if similarity >= self.config.similarity_threshold and similarity > best_similarity:
+                        best_similarity = similarity
+                        best_cache_key = metadata.get("cache_key")
+
+                except Exception as e:
+                    logger.warning(f"[SIMILARITY] Error processing final response metadata: {str(e)}")
+                    continue
+
+            # Similarity sonuçlarını logla
+            if best_cache_key:
+                logger.info(f"[SIMILARITY] ✅ Cache hit: {best_similarity:.4f} (threshold: {self.config.similarity_threshold:.2f})")
+
+                # Cache'den final response'u al
+                final_response = await redis_client.get_cache_async("session", best_cache_key)
+                if final_response:
+                    # TTL kontrolü
+                    try:
+                        ttl_seconds = await redis_client.get_ttl_async("session", best_cache_key)
+                        if ttl_seconds:
+                            minutes = ttl_seconds // 60
+                            seconds = ttl_seconds % 60
+                            logger.info(f"[SIMILARITY] 🚀 Returning cached response (TTL: {minutes}m {seconds}s)")
+                        else:
+                            logger.info("[SIMILARITY] 🚀 Returning cached response (TTL: permanent)")
+                    except Exception as e:
+                        logger.info("[SIMILARITY] 🚀 Returning cached response")
+                    return final_response
+            else:
+                max_sim = max(all_similarities, key=lambda x: x["similarity"])["similarity"] if all_similarities else 0.0
+                logger.debug(f"[SIMILARITY] Cache miss - max similarity: {max_sim:.4f}")
+
+            return None
+
+        except Exception as e:
+            logger.error(f"[SIMILARITY] Final response similarity search error: {str(e)}")
+            return None
+
+    async def cache_final_response_with_similarity(self, query: str, search_config: Dict[str, Any],
+                                                  final_response: Dict[str, Any], ttl: Optional[int] = None) -> bool:
+        """
+        Final response'u similarity metadata ile cache'e kaydet
+        """
+        try:
+            # TTL config'den al
+            ttl = ttl or self.config.final_response_cache_ttl
+
+            # Response için unique cache key oluştur
+            import time
+            timestamp = int(time.time() * 1000)
+            cache_key = f"tutorlyai:final_response:{timestamp}:{hashlib.md5(query.encode()).hexdigest()[:8]}"
+
+            # Final response'u cache'e kaydet
+            result = await redis_client.set_cache_async("session", cache_key, final_response, ttl)
+
+            if result and self.config.enable_similarity_cache:
+                # Query embedding hesapla
+                embedding = self._get_query_embedding(query)
+                if embedding is not None:
+                    # Final response metadata'sını kaydet
+                    await self._store_final_response_metadata(query, search_config, cache_key, embedding, ttl)
+
+            return result
+
+        except Exception as e:
+            logger.error(f"[SIMILARITY] Final response cache error: {str(e)}")
+            return False
+
+    async def _store_final_response_metadata(self, query: str, search_config: Dict[str, Any],
+                                           cache_key: str, embedding: np.ndarray, ttl: int):
+        """Final response metadata'sını Redis'e sakla"""
+        try:
+            metadata_key = f"tutorlyai:similarity:final_response:metadata"
+
+            query_metadata = {
+                "query": self._normalize_query(query),
+                "search_config": {k: v for k, v in sorted(search_config.items())},  # Normalize et
+                "cache_key": cache_key,
+                "embedding": embedding.tolist(),
+                "timestamp": asyncio.get_event_loop().time()
+            }
+
+            # Mevcut metadata'ları al
+            existing_metadata = await redis_client.get_cache_async("session", metadata_key)
+            if existing_metadata is None:
+                existing_metadata = []
+            elif not isinstance(existing_metadata, list):
+                existing_metadata = []
+
+            # Yeni metadata'yı ekle
+            existing_metadata.append(query_metadata)
+
+            # Max limit kontrolü
+            if len(existing_metadata) > self.config.max_similar_queries:
+                existing_metadata.sort(key=lambda x: x.get('timestamp', 0))
+                existing_metadata = existing_metadata[-self.config.max_similar_queries:]
+
+            # Geri kaydet
+            await redis_client.set_cache_async("session", metadata_key, existing_metadata, ttl)
+
+            logger.debug(f"[SIMILARITY] Final response metadata stored (TTL: {ttl // 60}m {ttl % 60}s)")
+
+        except Exception as e:
+            logger.error(f"[SIMILARITY] Failed to store final response metadata: {str(e)}")
 
     async def set_cached_result_with_similarity(self, cache_type: str, cache_key: str,
                                                value: Any, query: str,

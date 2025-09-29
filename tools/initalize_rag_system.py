@@ -350,22 +350,24 @@ async def _search_books_enhanced_impl(query: str, filters: Optional[Dict[str, An
                         }
             
             # Hibrit skor hesapla ve threshold'a göre filtrele
+            accepted_count = 0
+            rejected_count = 0
+
             for doc_id, scores in processed_docs.items():
-                hybrid_score = (semantic_weight * scores['semantic_score'] + 
+                hybrid_score = (semantic_weight * scores['semantic_score'] +
                               keyword_weight * scores['bm25_score'])
-                
+
                 if hybrid_score >= score_threshold:
                     doc = scores['doc']
                     doc.metadata['hybrid_score'] = hybrid_score
                     doc.metadata['semantic_score'] = scores['semantic_score']
                     doc.metadata['bm25_score'] = scores['bm25_score']
                     final_results.append((doc, hybrid_score))
-                    
-                    logger.info(f"[SEARCH] ✓ Kabul: {doc.metadata.get('source', 'N/A')} - "
-                          f"Hibrit: {hybrid_score:.3f} (S:{scores['semantic_score']:.3f}, BM25:{scores['bm25_score']:.3f})")
+                    accepted_count += 1
                 else:
-                    logger.info(f"[SEARCH] ✗ Ret: {scores['doc'].metadata.get('source', 'N/A')} - "
-                          f"Hibrit: {hybrid_score:.3f} (threshold: {score_threshold})")
+                    rejected_count += 1
+
+            logger.info(f"[SEARCH] Results: {accepted_count} accepted, {rejected_count} rejected (threshold: {score_threshold})")
             
             # Hibrit skora göre sırala
             final_results.sort(key=lambda x: x[1], reverse=True)
@@ -377,21 +379,22 @@ async def _search_books_enhanced_impl(query: str, filters: Optional[Dict[str, An
             docs_with_scores = vectorstore.similarity_search_with_score(query, **search_kwargs)
             
             final_docs = []
+            accepted_count = 0
+            rejected_count = 0
+
             for doc, score in docs_with_scores:
                 similarity_score = 1.0 - score if score <= 1.0 else 0.0
-                
+
                 if similarity_score >= score_threshold:
                     doc.metadata['hybrid_score'] = similarity_score
                     doc.metadata['semantic_score'] = similarity_score
                     doc.metadata['bm25_score'] = 0.0
                     final_docs.append(doc)
-                    
-                    logger.info(f"[SEARCH] ✓ Kabul: {doc.metadata.get('source', 'N/A')} - "
-                          f"Score: {similarity_score:.3f}")
+                    accepted_count += 1
                 else:
-                    logger.info(f"[SEARCH] ✗ Ret: {doc.metadata.get('source', 'N/A')} - "
-                          f"Score: {similarity_score:.3f} (threshold: {score_threshold})")
-            
+                    rejected_count += 1
+
+            logger.info(f"[SEARCH] Results: {accepted_count} accepted, {rejected_count} rejected (threshold: {score_threshold})")
             final_docs = final_docs[:k]
         
         logger.info(f"[SEARCH] Final: {len(final_docs)} sonuç döndürülüyor")

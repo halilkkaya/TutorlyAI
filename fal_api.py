@@ -229,7 +229,7 @@ async def android_compatibility_middleware(request: Request, call_next):
 
     # Android uygulamasından gelen istekler için özel handling
     if is_android:
-        logger.info(f"[ANDROID] Request from Android app: {user_agent}")
+        logger.debug(f"[ANDROID] Request from Android app: {user_agent}")
 
         # Android app'e özel header'lar ekle
         response = await call_next(request)
@@ -264,7 +264,7 @@ async def performance_middleware(request: Request, call_next):
 
     # Memory kontrolü
     if not memory_monitor.check_memory_limits():
-        logger.error(f"[PERFORMANCE] Memory limit exceeded, rejecting request from {client_ip}")
+        logger.warning(f"[PERFORMANCE] Memory limit exceeded, rejecting request")
         raise HTTPException(status_code=503, detail="Server overloaded, please try again later")
 
     # Concurrent request limiting
@@ -503,42 +503,39 @@ async def generate_rag_answer(request: TextGenerationRequest, api_key: str = Dep
         sanitized_prompt = security_validator.sanitize_ai_prompt(request.prompt, "prompt")
         logger.info(f"[GENERATE] Gelen sorgu: '{sanitized_prompt[:50]}...'")
 
-        # Redis Response Cache kontrolü
-        try:
-            from tools.redis_cache_adapters import redis_response_cache
-            import hashlib
-            import json
-
-            # Response cache key oluştur
-            response_cache_data = {
-                "prompt": sanitized_prompt,
-                "search_k": request.search_k,
-                "score_threshold": request.score_threshold,
-                "use_hybrid": request.use_hybrid,
-                "semantic_weight": request.semantic_weight,
-                "keyword_weight": request.keyword_weight
-            }
-            response_cache_key = hashlib.md5(
-                json.dumps(response_cache_data, sort_keys=True).encode('utf-8')
-            ).hexdigest()
-
-            # Cache'den kontrol et
-            cached_response = await redis_response_cache.get_async("generate_response:" + response_cache_key)
-            if cached_response:
-                logger.info("[GENERATE] 🚀 RESPONSE CACHE HIT - Cached response döndürülüyor")
-                return cached_response
-
-        except Exception as cache_error:
-            logger.warning(f"[GENERATE] Response cache error: {str(cache_error)}")
-
-        # 1. Arama planı oluştur
+        # 1. Her zaman arama planı oluştur (API 1 - Query Generation)
         search_plan = await get_search_plan(sanitized_prompt)
         query = search_plan.get("query", request.prompt)
         filters = search_plan.get("filters", {})
 
         logger.info(f"[GENERATE] Arama planı - Query: '{query}', Filters: {filters}")
-        
-        # 2. Hibrit arama stratejisi ile doküman bulma (request parametrelerini kullan)
+
+        # 2. Search configuration oluştur
+        search_config = {
+            "search_k": request.search_k,
+            "score_threshold": request.score_threshold,
+            "use_hybrid": request.use_hybrid,
+            "semantic_weight": request.semantic_weight,
+            "keyword_weight": request.keyword_weight
+        }
+
+        # 3. 🚀 QUERY-BASED SIMILARITY CACHE KONTROLÜ
+        try:
+            from tools.similarity_cache import similarity_cache
+
+            # Generated query üzerinden benzerlik kontrol et
+            cached_final_response = await similarity_cache.get_final_response_with_similarity(
+                query, search_config
+            )
+
+            if cached_final_response:
+                logger.info("[GENERATE] 🎯 QUERY SIMILARITY HIT - RAG ve API-2 çağrısı atlanıyor")
+                return cached_final_response
+
+        except Exception as cache_error:
+            logger.warning(f"[GENERATE] Query similarity cache error: {str(cache_error)}")
+
+        # 4. Hibrit arama stratejisi ile doküman bulma (request parametrelerini kullan)
         relevant_docs = await search_books_enhanced_async(
             query=query,
             filters=filters,
@@ -651,11 +648,28 @@ async def generate_rag_answer(request: TextGenerationRequest, api_key: str = Dep
             "search_details": search_details
         }
 
-        # Response'u Redis cache'e kaydet
+        # Response'u query bazında similarity cache'e kaydet
+        try:
+            from tools.similarity_cache import similarity_cache
+            ttl_minutes = similarity_cache.config.final_response_cache_ttl // 60
+            await similarity_cache.cache_final_response_with_similarity(
+                query, search_config, response_data  # TTL config'den alınacak
+            )
+            logger.info(f"[GENERATE] ✅ Final response cached with query-based similarity metadata (TTL: {ttl_minutes}m)")
+        except Exception as cache_error:
+            logger.warning(f"[GENERATE] Query-based similarity cache save error: {str(cache_error)}")
+
+        # Response'u Redis cache'e de kaydet (fallback)
         try:
             from tools.redis_cache_adapters import redis_response_cache
+            import hashlib
+            import json
+
+            response_cache_key = hashlib.md5(
+                json.dumps(search_config, sort_keys=True).encode('utf-8')
+            ).hexdigest()
             await redis_response_cache.set_async("generate_response:" + response_cache_key, response_data)
-            logger.info("[GENERATE] ✅ Response cached successfully")
+            logger.info("[GENERATE] ✅ Response cached successfully (fallback)")
         except Exception as cache_error:
             logger.warning(f"[GENERATE] Response cache save error: {str(cache_error)}")
 
