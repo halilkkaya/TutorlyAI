@@ -69,7 +69,7 @@ async def get_search_plan(user_prompt: str) -> Dict[str, Any]:
         if "sinif" in plan["filters"]:
             try:
                 sinif = int(plan["filters"]["sinif"])
-                if sinif not in [9, 10, 11, 12]:
+                if sinif not in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
                     logger.warning(f"[PLANNER] ⚠️  Geçersiz sınıf kaldırıldı: {sinif}")
                     del plan["filters"]["sinif"]
                 else:
